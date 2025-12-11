@@ -2,7 +2,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from tensorflow.keras.models import load_model
 import json
 import os
@@ -136,19 +136,37 @@ async def detect_disease(file: UploadFile = File(...)):
         if image.size[0] == 0 or image.size[1] == 0:
             raise HTTPException(status_code=400, detail="Invalid image dimensions")
         
-        # Preprocess image to match training data
+        # Enhanced preprocessing for better accuracy
         # Get expected input size from model (supports both 128x128 and 224x224)
         expected_shape = model.input_shape[1:]  # Skip batch dimension
         img_size = (expected_shape[0], expected_shape[1])  # (height, width)
         
-        # Resize image to match model input size
-        image = image.resize(img_size, Image.Resampling.LANCZOS)
+        # Convert to RGB if needed
         if image.mode != 'RGB':
             image = image.convert('RGB')
+        
+        # Image enhancement for better detection accuracy
+        # Enhance contrast (helps with disease visibility)
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1.2)  # Increase contrast by 20%
+        
+        # Enhance sharpness (helps with edge detection)
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(1.1)  # Increase sharpness by 10%
+        
+        # Optional: Apply slight denoising (uncomment if images are noisy)
+        # image = image.filter(ImageFilter.MedianFilter(size=3))
+        
+        # Resize image to match model input size (use high-quality resampling)
+        image = image.resize(img_size, Image.Resampling.LANCZOS)
         
         # Convert to array and normalize (matching training: rescale=1./255)
         img_array = np.array(image, dtype=np.float32)
         img_array = img_array / 255.0  # Normalize to [0, 1] range
+        
+        # Ensure values are in valid range [0, 1]
+        img_array = np.clip(img_array, 0.0, 1.0)
+        
         img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
         
         # Verify shape matches model input

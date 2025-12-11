@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 
 function DiseaseDetection() {
@@ -8,9 +8,26 @@ function DiseaseDetection() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [cameraActive, setCameraActive] = useState(false)
+  const [countdown, setCountdown] = useState(0)
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const streamRef = useRef(null)
+  const countdownIntervalRef = useRef(null)
+
+  // Ensure video plays when stream is set
+  useEffect(() => {
+    if (videoRef.current && streamRef.current && cameraActive) {
+      const video = videoRef.current
+      video.srcObject = streamRef.current
+      
+      video.onloadedmetadata = () => {
+        video.play().catch(err => {
+          console.error('Error playing video:', err)
+          setError('Error starting video. Please try again.')
+        })
+      }
+    }
+  }, [cameraActive])
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0]
@@ -24,21 +41,44 @@ function DiseaseDetection() {
 
   const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' } // Use back camera if available
-      })
+      // Try to get camera with maximum quality for better accuracy
+      const constraints = {
+        video: {
+          facingMode: 'environment', // Use back camera on mobile
+          width: { ideal: 1920, min: 1280 }, // Higher resolution for better accuracy
+          height: { ideal: 1080, min: 720 },
+          aspectRatio: { ideal: 16/9 }
+        }
+      }
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
       streamRef.current = stream
+      setCameraActive(true)
+      setError(null) // Clear any previous errors
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        setCameraActive(true)
+        // Force play
+        videoRef.current.play().catch(err => {
+          console.error('Error playing video:', err)
+          setError('Error starting video. Please try again.')
+        })
       }
     } catch (err) {
       console.error('Error accessing camera:', err)
-      setError('Unable to access camera. Please check permissions.')
+      setError('Unable to access camera. Please check permissions or use "Upload Image" instead.')
+      setCameraActive(false)
     }
   }
 
   const stopCamera = () => {
+    // Clear countdown if active
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current)
+      countdownIntervalRef.current = null
+    }
+    setCountdown(0)
+    
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
@@ -46,15 +86,57 @@ function DiseaseDetection() {
     setCameraActive(false)
   }
 
-  const captureImage = () => {
+  const captureImageWithCountdown = () => {
+    if (videoRef.current && canvasRef.current) {
+      // Start countdown
+      setCountdown(3)
+      setError(null)
+      
+      let count = 3
+      countdownIntervalRef.current = setInterval(() => {
+        count--
+        setCountdown(count)
+        
+        if (count <= 0) {
+          clearInterval(countdownIntervalRef.current)
+          setCountdown(0)
+          performCapture()
+        }
+      }, 1000)
+    } else {
+      setError('Camera not initialized. Please close and reopen the camera.')
+    }
+  }
+
+  const performCapture = () => {
     if (videoRef.current && canvasRef.current) {
       const canvas = canvasRef.current
       const video = videoRef.current
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0)
       
+      // Check if video is ready
+      if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+        setError('Camera not ready. Please wait a moment and try again.')
+        return
+      }
+      
+      // Use higher resolution for better accuracy
+      const scale = 2 // Capture at 2x resolution for better quality
+      canvas.width = video.videoWidth * scale
+      canvas.height = video.videoHeight * scale
+      const ctx = canvas.getContext('2d')
+      
+      // Enable high-quality rendering
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = 'high'
+      
+      // Flip the image back (since we mirrored the video)
+      ctx.translate(canvas.width, 0)
+      ctx.scale(-1, 1)
+      
+      // Draw video at higher resolution
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      
+      // Convert to blob with maximum quality
       canvas.toBlob((blob) => {
         if (blob) {
           const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' })
@@ -63,9 +145,18 @@ function DiseaseDetection() {
           setResult(null)
           setError(null)
           stopCamera()
+        } else {
+          setError('Failed to capture image. Please try again.')
         }
-      }, 'image/jpeg')
+      }, 'image/jpeg', 0.98) // Maximum quality
+    } else {
+      setError('Camera not initialized. Please close and reopen the camera.')
     }
+  }
+
+  const captureImage = () => {
+    // Immediate capture (no countdown)
+    performCapture()
   }
 
   const detectDisease = async () => {
@@ -134,29 +225,81 @@ function DiseaseDetection() {
                 📷 Open Camera
               </button>
             ) : (
-              <div className="space-y-2">
-                <div className="relative bg-black rounded-lg overflow-hidden">
+              <div className="space-y-3">
+                <div className="relative bg-black rounded-lg overflow-hidden" style={{ minHeight: '300px', width: '100%', position: 'relative' }}>
                   <video
                     ref={videoRef}
                     autoPlay
                     playsInline
-                    className="w-full h-auto"
+                    muted
+                    className="w-full"
+                    style={{ 
+                      width: '100%',
+                      height: 'auto',
+                      minHeight: '300px',
+                      maxHeight: '500px',
+                      objectFit: 'contain',
+                      display: 'block',
+                      transform: 'scaleX(-1)',
+                      backgroundColor: '#000',
+                      zIndex: 1
+                    }}
                   />
                   <canvas ref={canvasRef} className="hidden" />
+                  
+                  {/* Countdown overlay */}
+                  {countdown > 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-20">
+                      <div className="text-center">
+                        <div className="text-8xl font-bold text-white mb-4 animate-pulse">
+                          {countdown}
+                        </div>
+                        <p className="text-white text-lg">Get ready...</p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Loading indicator */}
+                  {cameraActive && !videoRef.current?.readyState && countdown === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center text-white z-10">
+                      <div className="text-center">
+                        <div className="animate-spin rounded-full h-12 w-12 border-4 border-white border-t-transparent mx-auto mb-2"></div>
+                        <p>Starting camera...</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={captureImage}
-                    className="flex-1 px-4 py-2 bg-green-500 text-white rounded-lg font-semibold hover:bg-green-600 transition-all"
+                    onClick={captureImageWithCountdown}
+                    disabled={countdown > 0}
+                    className="flex-1 px-4 py-3 bg-green-500 text-white rounded-lg font-semibold hover:bg-green-600 transition-all transform hover:scale-105 active:scale-95 text-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    📸 Capture
+                    {countdown > 0 ? `⏳ ${countdown}` : '📸 Capture (3s countdown)'}
+                  </button>
+                  <button
+                    onClick={captureImage}
+                    disabled={countdown > 0}
+                    className="flex-1 px-4 py-3 bg-blue-500 text-white rounded-lg font-semibold hover:bg-blue-600 transition-all transform hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    📷 Instant Capture
                   </button>
                   <button
                     onClick={stopCamera}
-                    className="flex-1 px-4 py-2 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 transition-all"
+                    className="px-4 py-3 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 transition-all transform hover:scale-105 active:scale-95 shadow-lg"
                   >
                     ❌ Close
                   </button>
+                </div>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <p className="text-xs font-semibold text-blue-800 mb-1">📋 Tips for Best Results:</p>
+                  <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
+                    <li>Ensure good lighting (natural light is best)</li>
+                    <li>Fill the frame with the leaf (close-up view)</li>
+                    <li>Keep the camera steady</li>
+                    <li>Focus on the leaf surface clearly</li>
+                    <li>Avoid shadows and reflections</li>
+                  </ul>
                 </div>
               </div>
             )}
@@ -164,13 +307,23 @@ function DiseaseDetection() {
 
           {/* Preview */}
           {preview && (
-            <div className="mt-4">
-              <h4 className="text-sm font-semibold text-gray-700 mb-2">Preview</h4>
+            <div className="mt-4 space-y-2">
+              <h4 className="text-sm font-semibold text-gray-700 mb-2">Captured Image Preview</h4>
               <img
                 src={preview}
                 alt="Preview"
-                className="w-full h-auto rounded-lg border-2 border-gray-200"
+                className="w-full h-auto rounded-lg border-2 border-gray-200 max-h-64 object-contain"
               />
+              <button
+                onClick={() => {
+                  setPreview(null)
+                  setSelectedImage(null)
+                  setResult(null)
+                }}
+                className="w-full px-4 py-2 bg-gray-500 text-white rounded-lg text-sm hover:bg-gray-600 transition-all"
+              >
+                ✏️ Change Image
+              </button>
             </div>
           )}
 
@@ -179,9 +332,18 @@ function DiseaseDetection() {
             <button
               onClick={detectDisease}
               disabled={loading}
-              className="w-full px-6 py-3 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-all transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              className="w-full px-6 py-4 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-all transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 text-lg shadow-lg"
             >
-              {loading ? '🔍 Analyzing...' : '🔍 Detect Disease'}
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="animate-spin">⏳</span>
+                  Analyzing Image...
+                </span>
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  🔍 Detect Disease
+                </span>
+              )}
             </button>
           )}
         </div>
