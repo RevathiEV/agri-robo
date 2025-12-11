@@ -1,50 +1,37 @@
 # ============================================
-# Root Requirements for Agri ROBO Tomato
+# Requirements for Agri ROBO Tomato
 # ============================================
-# This is a convenience file that includes all backend dependencies
-# For specific use cases, use the files in backend/ directory:
-#   - backend/requirements.txt (for API server only)
-#   - backend/requirements-training.txt (for training models)
+# Install in virtual environment (NOT globally)
+# 
+# Installation:
+# 1. Create virtual environment: python -m venv backend/venv
+# 2. Activate: backend\venv\Scripts\Activate.ps1 (Windows) or source backend/venv/bin/activate (Linux/Mac)
+# 3. Install: pip install -r requirements.txt
+#
+# Note: For Python 3.13, if NumPy installation fails:
+# pip install --only-binary :all: numpy
+# pip install -r requirements.txt
 
 # ============================================
-# Backend API Server Dependencies
-# ============================================
 # Web Framework & Server
+# ============================================
 fastapi>=0.104.1
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 
+# ============================================
 # Machine Learning & Deep Learning
+# ============================================
 tensorflow>=2.10.0,<3.0.0
 numpy>=1.24.0
 scipy>=1.9.0
 
+# ============================================
 # Image Processing
+# ============================================
 Pillow>=9.0.0
 
+# ============================================
 # Testing & Development
+# ============================================
 requests>=2.31.0
-
-# ============================================
-# Optional: Streamlit Web App
-# ============================================
-# Uncomment if you want to use the Streamlit alternative UI (app.py)
-# streamlit>=1.28.0
-
-# ============================================
-# Installation Instructions
-# ============================================
-# 1. Create virtual environment: python -m venv backend/venv
-# 2. Activate virtual environment:
-#    - Windows: backend\venv\Scripts\Activate.ps1
-#    - Linux/Mac: source backend/venv/bin/activate
-# 3. Install dependencies: pip install -r requirements.txt
-#
-# For training models, use: pip install -r backend/requirements-training.txt
-
-# ============================================
-# Notes:
-# ============================================
-# - Use backend/requirements.txt for production deployment
-# - Use backend/requirements-training.txt for model training
-# - Frontend uses npm (see frontend/package.json)

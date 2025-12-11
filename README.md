@@ -33,10 +33,13 @@ A web application for detecting tomato leaf diseases using AI, with robot contro
    source backend/venv/bin/activate
    ```
 
-3. **Install dependencies:**
+3. **Install dependencies (in virtual environment, NOT globally):**
    ```bash
+   # Make sure virtual environment is activated first!
    pip install -r requirements.txt
    ```
+   
+   **Important:** Always install in virtual environment, never globally!
    
    **Note:** If you encounter NumPy installation issues on Python 3.13:
    ```bash
@@ -93,7 +96,7 @@ backend\venv\Scripts\Activate.ps1  # Windows
 source backend/venv/bin/activate  # Linux/Mac
 
 # Train model (takes 1-3 hours)
-python cnn_train_transfer_learning.py
+python cnn_train.py
 ```
 
 **Note:** Training data (`train/` and `val/` folders) are not included in the repository due to size.
@@ -103,13 +106,12 @@ python cnn_train_transfer_learning.py
 ```
 tomato/
 ├── backend/              # FastAPI backend
-│   ├── main.py          # API server
-│   └── requirements.txt  # Python dependencies
+│   └── main.py          # API server
 ├── frontend/             # React frontend
 │   ├── src/             # Source code
 │   └── package.json     # Node dependencies
-├── requirements.txt     # Root requirements file
-├── cnn_train*.py        # Training scripts
+├── requirements.txt     # Python dependencies (install in virtual environment)
+├── cnn_train.py         # Training script
 └── *.h5                 # Model files (not in git)
 ```
 
