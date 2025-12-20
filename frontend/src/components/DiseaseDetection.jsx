@@ -8,26 +8,8 @@ function DiseaseDetection() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [cameraActive, setCameraActive] = useState(false)
-  const [countdown, setCountdown] = useState(0)
+  const [capturing, setCapturing] = useState(false)
   const videoRef = useRef(null)
-  const canvasRef = useRef(null)
-  const streamRef = useRef(null)
-  const countdownIntervalRef = useRef(null)
-
-  // Ensure video plays when stream is set
-  useEffect(() => {
-    if (videoRef.current && streamRef.current && cameraActive) {
-      const video = videoRef.current
-      video.srcObject = streamRef.current
-      
-      video.onloadedmetadata = () => {
-        video.play().catch(err => {
-          console.error('Error playing video:', err)
-          setError('Error starting video. Please try again.')
-        })
-      }
-    }
-  }, [cameraActive])
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0]
@@ -36,128 +18,132 @@ function DiseaseDetection() {
       setPreview(URL.createObjectURL(file))
       setResult(null)
       setError(null)
+      // Stop camera if active
+      if (cameraActive) {
+        stopCamera()
+      }
     }
   }
 
   const startCamera = async () => {
     try {
-      // Try to get camera with maximum quality for better accuracy
-      const constraints = {
-        video: {
-          facingMode: 'environment', // Use back camera on mobile
-          width: { ideal: 1920, min: 1280 }, // Higher resolution for better accuracy
-          height: { ideal: 1080, min: 720 },
-          aspectRatio: { ideal: 16/9 }
-        }
-      }
-      
-      const stream = await navigator.mediaDevices.getUserMedia(constraints)
-      streamRef.current = stream
-      setCameraActive(true)
-      setError(null) // Clear any previous errors
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        // Force play
-        videoRef.current.play().catch(err => {
-          console.error('Error playing video:', err)
-          setError('Error starting video. Please try again.')
-        })
+      setError(null)
+      const response = await axios.post('/api/camera/start')
+      if (response.data.success) {
+        setCameraActive(true)
+        setPreview(null)
+        setSelectedImage(null)
+        setResult(null)
+        
+        // Stream URL will be set by useEffect when cameraActive changes
       }
     } catch (err) {
-      console.error('Error accessing camera:', err)
-      setError('Unable to access camera. Please check permissions or use "Upload Image" instead.')
+      console.error('Error starting camera:', err)
+      setError(err.response?.data?.detail || 'Failed to start camera. Please try again.')
       setCameraActive(false)
     }
   }
 
-  const stopCamera = () => {
-    // Clear countdown if active
-    if (countdownIntervalRef.current) {
-      clearInterval(countdownIntervalRef.current)
-      countdownIntervalRef.current = null
+  const stopCamera = async () => {
+    try {
+      await axios.post('/api/camera/stop')
+      setCameraActive(false)
+      if (videoRef.current) {
+        videoRef.current.src = ''
+      }
+    } catch (err) {
+      console.error('Error stopping camera:', err)
     }
-    setCountdown(0)
-    
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-      streamRef.current = null
-    }
-    setCameraActive(false)
   }
 
-  const captureImageWithCountdown = () => {
-    if (videoRef.current && canvasRef.current) {
-      // Start countdown
-      setCountdown(3)
+  const captureImage = async () => {
+    if (!cameraActive) return
+    
+    try {
+      setCapturing(true)
       setError(null)
       
-      let count = 3
-      countdownIntervalRef.current = setInterval(() => {
-        count--
-        setCountdown(count)
-        
-        if (count <= 0) {
-          clearInterval(countdownIntervalRef.current)
-          setCountdown(0)
-          performCapture()
-        }
-      }, 1000)
-    } else {
-      setError('Camera not initialized. Please close and reopen the camera.')
-    }
-  }
-
-  const performCapture = () => {
-    if (videoRef.current && canvasRef.current) {
-      const canvas = canvasRef.current
-      const video = videoRef.current
+      const response = await axios.post('/api/camera/capture', {}, {
+        responseType: 'blob'
+      })
       
-      // Check if video is ready
-      if (video.readyState !== video.HAVE_ENOUGH_DATA) {
-        setError('Camera not ready. Please wait a moment and try again.')
-        return
+      // Verify blob is valid
+      if (!response.data || response.data.size === 0) {
+        throw new Error('Received empty image data')
       }
       
-      // Use higher resolution for better accuracy
-      const scale = 2 // Capture at 2x resolution for better quality
-      canvas.width = video.videoWidth * scale
-      canvas.height = video.videoHeight * scale
-      const ctx = canvas.getContext('2d')
+      // Convert blob to file
+      const blob = response.data
+      const file = new File([blob], 'captured.jpg', { type: 'image/jpeg' })
       
-      // Enable high-quality rendering
-      ctx.imageSmoothingEnabled = true
-      ctx.imageSmoothingQuality = 'high'
+      // Create preview URL
+      const previewUrl = URL.createObjectURL(blob)
       
-      // Flip the image back (since we mirrored the video)
-      ctx.translate(canvas.width, 0)
-      ctx.scale(-1, 1)
+      // Stop camera first
+      setCameraActive(false)
       
-      // Draw video at higher resolution
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      // Stop video stream
+      if (videoRef.current) {
+        videoRef.current.src = ''
+      }
       
-      // Convert to blob with maximum quality
-      canvas.toBlob((blob) => {
-        if (blob) {
-          const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' })
-          setSelectedImage(file)
-          setPreview(URL.createObjectURL(blob))
-          setResult(null)
-          setError(null)
-          stopCamera()
-        } else {
-          setError('Failed to capture image. Please try again.')
-        }
-      }, 'image/jpeg', 0.98) // Maximum quality
-    } else {
-      setError('Camera not initialized. Please close and reopen the camera.')
+      // Stop camera on backend
+      try {
+        await axios.post('/api/camera/stop')
+      } catch (stopErr) {
+        console.warn('Error stopping camera:', stopErr)
+      }
+      
+      // Set preview after a small delay to ensure UI updates
+      setTimeout(() => {
+        setSelectedImage(file)
+        setPreview(previewUrl)
+        setResult(null)
+      }, 100)
+      
+    } catch (err) {
+      console.error('Error capturing image:', err)
+      setError(err.response?.data?.detail || err.message || 'Failed to capture image. Please try again.')
+      setCameraActive(false)
+      if (videoRef.current) {
+        videoRef.current.src = ''
+      }
+    } finally {
+      setCapturing(false)
     }
   }
 
-  const captureImage = () => {
-    // Immediate capture (no countdown)
-    performCapture()
-  }
+  // Handle stream URL updates when camera becomes active
+  useEffect(() => {
+    if (cameraActive && videoRef.current) {
+      // Wait a moment for camera to be ready
+      const timer = setTimeout(() => {
+        if (videoRef.current && cameraActive) {
+          const streamUrl = '/api/camera/stream?t=' + Date.now()
+          console.log('Setting stream URL:', streamUrl)
+          videoRef.current.src = streamUrl
+        }
+      }, 800) // Wait 800ms for camera to start capturing frames
+      
+      return () => clearTimeout(timer)
+    } else if (!cameraActive && videoRef.current) {
+      videoRef.current.src = ''
+    }
+  }, [cameraActive])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (cameraActive) {
+        stopCamera()
+      }
+      // Clean up preview URLs
+      if (preview) {
+        URL.revokeObjectURL(preview)
+      }
+    }
+  }, [])
+
 
   const detectDisease = async () => {
     if (!selectedImage) {
@@ -192,130 +178,89 @@ function DiseaseDetection() {
     <div className="space-y-6">
       {/* Image Upload Section */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Upload/Camera Section */}
+        {/* Upload Section */}
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-gray-700">Image Input</h3>
           
-          {/* File Upload */}
-          <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-primary-500 transition-colors">
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleImageUpload}
-              className="hidden"
-              id="image-upload"
-            />
-            <label
-              htmlFor="image-upload"
-              className="cursor-pointer flex flex-col items-center gap-2"
-            >
-              <span className="text-4xl">📁</span>
-              <span className="text-gray-600 font-medium">Upload Image</span>
-              <span className="text-sm text-gray-500">Click to select an image file</span>
-            </label>
-          </div>
-
-          {/* Camera Section */}
-          <div className="space-y-2">
+          {/* Camera Controls */}
+          <div className="flex gap-2">
             {!cameraActive ? (
               <button
                 onClick={startCamera}
-                className="w-full px-4 py-3 bg-blue-500 text-white rounded-lg font-semibold hover:bg-blue-600 transition-all transform hover:scale-105 active:scale-95"
+                className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
               >
                 📷 Open Camera
               </button>
             ) : (
-              <div className="space-y-3">
-                <div className="relative bg-black rounded-lg overflow-hidden" style={{ minHeight: '300px', width: '100%', position: 'relative' }}>
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full"
-                    style={{ 
-                      width: '100%',
-                      height: 'auto',
-                      minHeight: '300px',
-                      maxHeight: '500px',
-                      objectFit: 'contain',
-                      display: 'block',
-                      transform: 'scaleX(-1)',
-                      backgroundColor: '#000',
-                      zIndex: 1
-                    }}
-                  />
-                  <canvas ref={canvasRef} className="hidden" />
-                  
-                  {/* Countdown overlay */}
-                  {countdown > 0 && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-20">
-                      <div className="text-center">
-                        <div className="text-8xl font-bold text-white mb-4 animate-pulse">
-                          {countdown}
-                        </div>
-                        <p className="text-white text-lg">Get ready...</p>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Loading indicator */}
-                  {cameraActive && !videoRef.current?.readyState && countdown === 0 && (
-                    <div className="absolute inset-0 flex items-center justify-center text-white z-10">
-                      <div className="text-center">
-                        <div className="animate-spin rounded-full h-12 w-12 border-4 border-white border-t-transparent mx-auto mb-2"></div>
-                        <p>Starting camera...</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={captureImageWithCountdown}
-                    disabled={countdown > 0}
-                    className="flex-1 px-4 py-3 bg-green-500 text-white rounded-lg font-semibold hover:bg-green-600 transition-all transform hover:scale-105 active:scale-95 text-lg shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {countdown > 0 ? `⏳ ${countdown}` : '📸 Capture (3s countdown)'}
-                  </button>
-                  <button
-                    onClick={captureImage}
-                    disabled={countdown > 0}
-                    className="flex-1 px-4 py-3 bg-blue-500 text-white rounded-lg font-semibold hover:bg-blue-600 transition-all transform hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    📷 Instant Capture
-                  </button>
-                  <button
-                    onClick={stopCamera}
-                    className="px-4 py-3 bg-red-500 text-white rounded-lg font-semibold hover:bg-red-600 transition-all transform hover:scale-105 active:scale-95 shadow-lg"
-                  >
-                    ❌ Close
-                  </button>
-                </div>
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <p className="text-xs font-semibold text-blue-800 mb-1">📋 Tips for Best Results:</p>
-                  <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
-                    <li>Ensure good lighting (natural light is best)</li>
-                    <li>Fill the frame with the leaf (close-up view)</li>
-                    <li>Keep the camera steady</li>
-                    <li>Focus on the leaf surface clearly</li>
-                    <li>Avoid shadows and reflections</li>
-                  </ul>
-                </div>
-              </div>
+              <button
+                onClick={captureImage}
+                disabled={capturing}
+                className="flex-1 px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {capturing ? '⏳ Capturing...' : '📸 Capture'}
+              </button>
+            )}
+            
+            {cameraActive && (
+              <button
+                onClick={stopCamera}
+                className="px-4 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-all"
+              >
+                ⏹️ Stop
+              </button>
             )}
           </div>
 
-          {/* Preview */}
-          {preview && (
-            <div className="mt-4 space-y-2">
-              <h4 className="text-sm font-semibold text-gray-700 mb-2">Captured Image Preview</h4>
+          {/* Live Camera Stream or Preview */}
+          {cameraActive ? (
+            <div className="border-2 border-blue-400 rounded-lg overflow-hidden bg-black min-h-[300px] flex items-center justify-center relative">
               <img
-                src={preview}
-                alt="Preview"
-                className="w-full h-auto rounded-lg border-2 border-gray-200 max-h-64 object-contain"
+                ref={videoRef}
+                alt="Live Camera Stream"
+                className="w-full h-auto max-h-[400px] object-contain"
+                style={{ display: 'block' }}
+                crossOrigin="anonymous"
+                onError={(e) => {
+                  console.error('Error loading camera stream:', e)
+                  setError('Failed to load camera stream. Please try again.')
+                }}
+                onLoad={() => {
+                  console.log('Camera stream image loaded')
+                }}
               />
+              {!videoRef.current?.complete && (
+                <div className="absolute inset-0 flex items-center justify-center text-white">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent mx-auto mb-2"></div>
+                    <p>Loading camera stream...</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : preview ? (
+            <div className="space-y-3">
+              <div className="border-2 border-green-400 rounded-lg overflow-hidden bg-gray-50 min-h-[300px] flex items-center justify-center p-2">
+                <img
+                  src={preview}
+                  alt="Captured Image"
+                  className="w-full h-auto max-h-[400px] object-contain rounded-lg shadow-lg"
+                  style={{ display: 'block' }}
+                  onError={(e) => {
+                    console.error('Error loading captured image')
+                    setError('Failed to load captured image. Please try capturing again.')
+                    setPreview(null)
+                    setSelectedImage(null)
+                  }}
+                  onLoad={() => {
+                    console.log('Captured image loaded successfully')
+                  }}
+                />
+              </div>
               <button
                 onClick={() => {
+                  if (preview) {
+                    URL.revokeObjectURL(preview)
+                  }
                   setPreview(null)
                   setSelectedImage(null)
                   setResult(null)
@@ -324,6 +269,24 @@ function DiseaseDetection() {
               >
                 ✏️ Change Image
               </button>
+            </div>
+          ) : (
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-primary-500 transition-colors min-h-[200px] flex items-center justify-center">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+                id="image-upload"
+              />
+              <label
+                htmlFor="image-upload"
+                className="cursor-pointer flex flex-col items-center gap-2"
+              >
+                <span className="text-4xl">📁</span>
+                <span className="text-gray-600 font-medium">Upload Image</span>
+                <span className="text-sm text-gray-500">Click to select an image file</span>
+              </label>
             </div>
           )}
 

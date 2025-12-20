@@ -1,20 +1,59 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
+from contextlib import asynccontextmanager
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 from tensorflow.keras.models import load_model
+import tensorflow as tf
 import json
 import os
 import io
 from typing import Optional
+import sys
+import threading
+import time
 
-app = FastAPI(title="Agri ROBO API", version="1.0.0")
+# Add system dist-packages to path for picamera2
+if '/usr/lib/python3/dist-packages' not in sys.path:
+    sys.path.insert(0, '/usr/lib/python3/dist-packages')
+
+# Try to import picamera2
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    PICAMERA2_AVAILABLE = False
+    print("Warning: picamera2 not available. Camera features will be disabled.")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events"""
+    # Startup
+    try:
+        load_model_and_mapping()
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        import traceback
+        traceback.print_exc()
+        print("API will start but disease detection will not work until model is available.")
+    
+    yield
+
+app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
 # CORS middleware to allow React frontend to access the API
+# Updated to include Pi's IP address
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:3000"],  # React dev servers
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://localhost:5173", 
+        "http://127.0.0.1:3000",
+        "http://10.222.54.41:3000",  # Pi's IP with port 3000
+        "http://10.222.54.41:5173",  # Pi's IP with port 5173
+        "*"  # Allow all origins for development
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -24,8 +63,14 @@ app.add_middleware(
 model = None
 class_mapping = None
 
+# Global variables for camera
+camera = None
+camera_streaming = False
+camera_lock = threading.Lock()
+current_frame = None
+
 def load_model_and_mapping():
-    """Load the disease detection model and class mapping"""
+    """Load the disease detection model and class mapping - TensorFlow 2.20.0 compatible"""
     global model, class_mapping
     
     # Get the project root directory (parent of backend folder)
@@ -57,8 +102,39 @@ def load_model_and_mapping():
             f"Please run cnn_train.py to generate the class mapping."
         )
     
+    print(f"TensorFlow version: {tf.__version__}")
     print(f"Loading model from: {model_path}")
-    model = load_model(model_path)
+    
+    # TensorFlow 2.20.0 compatible loading with compile=False
+    try:
+        # Try loading with compile=False for better cross-version compatibility
+        print("Attempting to load model with compile=False...")
+        model = load_model(model_path, compile=False)
+        print("✓ Model loaded (compile=False)")
+        
+        # Recompile with the same settings as training
+        print("Recompiling model...")
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        print("✓ Model recompiled successfully")
+        
+    except Exception as e1:
+        print(f"Warning: Could not load with compile=False: {e1}")
+        print("Trying standard load method...")
+        try:
+            model = load_model(model_path)
+            print("✓ Model loaded with standard method")
+        except Exception as e2:
+            raise RuntimeError(
+                f"Could not load model with either method.\n"
+                f"  compile=False error: {str(e1)[:200]}\n"
+                f"  standard error: {str(e2)[:200]}\n"
+                f"Model file may be corrupted or incompatible with TensorFlow {tf.__version__}"
+            )
+    
     print(f"Model loaded successfully! Input shape: {model.input_shape}")
     
     with open(mapping_path, 'r') as f:
@@ -67,15 +143,6 @@ def load_model_and_mapping():
     
     print(f"Class mapping loaded: {len(class_mapping)} classes")
     print("Model and class mapping loaded successfully!")
-
-# Load model on startup
-@app.on_event("startup")
-async def startup_event():
-    try:
-        load_model_and_mapping()
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        print("API will start but disease detection will not work until model is available.")
 
 @app.get("/")
 async def root():
@@ -102,7 +169,8 @@ async def health_check():
         "mapping_file_exists": mapping_exists,
         "model_path_checked": [model_path, model_path_best],
         "mapping_path_checked": mapping_path,
-        "num_classes": len(class_mapping) if class_mapping else 0
+        "num_classes": len(class_mapping) if class_mapping else 0,
+        "tensorflow_version": tf.__version__
     }
 
 @app.post("/api/detect-disease")
@@ -254,7 +322,223 @@ async def servo_control(action: str):
         "note": "GPIO control not yet implemented"
     }
 
+# ============================================
+# Camera Endpoints
+# ============================================
+
+def convert_frame_to_rgb(frame):
+    """Convert camera frame to RGB format"""
+    if len(frame.shape) == 3 and frame.shape[2] == 4:
+        rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
+        rgb_frame[:, :, 0] = frame[:, :, 2]  # R
+        rgb_frame[:, :, 1] = frame[:, :, 1]  # G
+        rgb_frame[:, :, 2] = frame[:, :, 0]  # B
+        return rgb_frame
+    elif len(frame.shape) == 3 and frame.shape[2] == 3:
+        return frame
+    else:
+        return frame
+
+def process_frame(frame):
+    """Apply minimal post-processing for natural look"""
+    rgb_frame = convert_frame_to_rgb(frame)
+    mean_brightness = rgb_frame.mean()
+    
+    image = Image.fromarray(rgb_frame, 'RGB')
+    
+    # Minimal brightness correction only if very dark
+    if mean_brightness < 30:
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(1.3)
+    
+    # Very minimal color correction
+    r, g, b = image.split()
+    b = ImageEnhance.Brightness(b).enhance(0.98)
+    r = ImageEnhance.Brightness(r).enhance(1.01)
+    g = ImageEnhance.Brightness(g).enhance(1.00)
+    image = Image.merge('RGB', (r, g, b))
+    
+    return np.array(image)
+
+def camera_capture_thread():
+    """Background thread that continuously captures frames when streaming"""
+    global camera, camera_streaming, current_frame
+    
+    while True:
+        if camera_streaming and camera is not None:
+            try:
+                with camera_lock:
+                    if camera is not None and camera_streaming:
+                        request = camera.capture_request()
+                        frame = request.make_array("main")
+                        request.release()
+                        
+                        # Process frame
+                        rgb_frame = process_frame(frame)
+                        
+                        # Convert to JPEG
+                        image = Image.fromarray(rgb_frame, 'RGB')
+                        img_bytes = io.BytesIO()
+                        image.save(img_bytes, format='JPEG', quality=85)
+                        img_bytes.seek(0)
+                        
+                        # Update frame (no lock needed for simple assignment)
+                        frame_data = img_bytes.getvalue()
+                        current_frame = frame_data
+                time.sleep(0.033)  # ~30 FPS
+            except Exception as e:
+                print(f"Camera capture error: {e}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(0.1)
+        else:
+            time.sleep(0.1)
+
+# Start camera capture thread
+if PICAMERA2_AVAILABLE:
+    camera_thread = threading.Thread(target=camera_capture_thread, daemon=True)
+    camera_thread.start()
+
+@app.post("/api/camera/start")
+async def start_camera():
+    """Start Pi camera stream"""
+    global camera, camera_streaming
+    
+    if not PICAMERA2_AVAILABLE:
+        raise HTTPException(status_code=503, detail="picamera2 not available on this system")
+    
+    try:
+        with camera_lock:
+            if camera is None:
+                camera = Picamera2(camera_num=0)
+                
+                # Configure camera
+                try:
+                    config = camera.create_preview_configuration(
+                        main={"size": (640, 480), "format": "RGB888"},
+                        colour_space="sRGB"
+                    )
+                    camera.configure(config)
+                except:
+                    config = camera.create_preview_configuration(main={"size": (640, 480)})
+                    camera.configure(config)
+                
+                # Set camera controls
+                try:
+                    camera.set_controls({
+                        "AwbEnable": True,
+                        "AeEnable": True,
+                    })
+                except:
+                    pass
+                
+                camera.start()
+                
+                # Warm up camera
+                for i in range(5):
+                    test_request = camera.capture_request()
+                    test_request.release()
+                    time.sleep(0.3)
+            
+            camera_streaming = True
+            # Reset frame buffer - wait a moment for first frame
+            current_frame = None
+            time.sleep(0.5)  # Give camera time to start capturing
+        
+        return {"success": True, "message": "Camera started"}
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to start camera: {str(e)}")
+
+@app.get("/api/camera/stream")
+async def camera_stream():
+    """MJPEG stream endpoint for live video"""
+    global camera_streaming, current_frame
+    
+    if not camera_streaming:
+        raise HTTPException(status_code=400, detail="Camera not started. Call /api/camera/start first")
+    
+    def generate_frames():
+        frame_count = 0
+        while camera_streaming:
+            # Wait for frame to be available (with timeout)
+            wait_count = 0
+            while current_frame is None and camera_streaming and wait_count < 100:
+                time.sleep(0.01)
+                wait_count += 1
+            
+            if current_frame:
+                try:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + current_frame + b'\r\n')
+                    frame_count += 1
+                except Exception as e:
+                    print(f"Error yielding frame: {e}")
+                    break
+            else:
+                # If no frame available, wait a bit longer
+                time.sleep(0.1)
+            
+            time.sleep(0.033)  # ~30 FPS
+    
+    return StreamingResponse(
+        generate_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no"  # Disable buffering for nginx if used
+        }
+    )
+
+@app.post("/api/camera/capture")
+async def capture_image():
+    """Capture current frame from camera and return as image"""
+    global camera, camera_streaming, current_frame
+    
+    if not camera_streaming or current_frame is None:
+        raise HTTPException(status_code=400, detail="Camera not streaming or no frame available")
+    
+    try:
+        # Get current frame
+        frame_data = current_frame
+        
+        # Stop streaming
+        camera_streaming = False
+        
+        # Return captured frame as JPEG
+        return Response(
+            content=frame_data,
+            media_type="image/jpeg",
+            headers={"Content-Disposition": "inline; filename=captured.jpg"}
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
+
+@app.post("/api/camera/stop")
+async def stop_camera():
+    """Stop camera stream and release resources"""
+    global camera, camera_streaming, current_frame
+    
+    try:
+        camera_streaming = False
+        current_frame = None
+        
+        with camera_lock:
+            if camera is not None:
+                camera.stop()
+                camera.close()
+                camera = None
+        
+        return {"success": True, "message": "Camera stopped"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop camera: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

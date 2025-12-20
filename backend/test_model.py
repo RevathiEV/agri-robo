@@ -1,5 +1,6 @@
 """
 Test script to verify the CNN model is properly loaded and can make predictions.
+TensorFlow 2.20.0 compatible version.
 Run this to test the model connection before using the API.
 """
 
@@ -8,13 +9,16 @@ import sys
 import numpy as np
 from PIL import Image
 from tensorflow.keras.models import load_model
+import tensorflow as tf
 import json
 
 def test_model_loading():
     """Test if model and mapping can be loaded"""
     print("=" * 60)
-    print("Testing Model Connection")
+    print("Testing Model Connection (TensorFlow 2.20.0 Compatible)")
     print("=" * 60)
+    print(f"TensorFlow version: {tf.__version__}")
+    print()
     
     # Get paths
     backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,12 +29,14 @@ def test_model_loading():
     mapping_path = os.path.join(project_root, 'class_mapping.json')
     
     # Check files
-    print("\n1. Checking model files...")
+    print("1. Checking model files...")
     if os.path.exists(model_path_best):
         model_path = model_path_best
         print(f"   ✓ Found best model: {model_path}")
+        print(f"   File size: {os.path.getsize(model_path) / (1024*1024):.2f} MB")
     elif os.path.exists(model_path):
         print(f"   ✓ Found model: {model_path}")
+        print(f"   File size: {os.path.getsize(model_path) / (1024*1024):.2f} MB")
     else:
         print(f"   ✗ Model not found!")
         print(f"     Checked: {model_path}")
@@ -46,16 +52,38 @@ def test_model_loading():
         print(f"     Please run cnn_train.py to generate the class mapping.")
         return False
     
-    # Load model
-    print("\n2. Loading model...")
+    # Load model with TensorFlow 2.20.0 compatibility
+    print("\n2. Loading model (TensorFlow 2.20.0 compatible)...")
     try:
-        model = load_model(model_path)
-        print(f"   ✓ Model loaded successfully!")
+        # Try loading with compile=False first (better compatibility)
+        print("   Attempting to load with compile=False...")
+        model = load_model(model_path, compile=False)
+        print(f"   ✓ Model loaded successfully (compile=False)!")
         print(f"   - Input shape: {model.input_shape}")
         print(f"   - Output shape: {model.output_shape}")
-    except Exception as e:
-        print(f"   ✗ Error loading model: {e}")
-        return False
+        
+        # Recompile the model
+        print("\n   Recompiling model...")
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        print("   ✓ Model recompiled successfully!")
+        
+    except Exception as e1:
+        print(f"   ✗ Error loading with compile=False: {e1}")
+        print("   Trying standard load method...")
+        try:
+            model = load_model(model_path)
+            print(f"   ✓ Model loaded successfully (standard method)!")
+            print(f"   - Input shape: {model.input_shape}")
+            print(f"   - Output shape: {model.output_shape}")
+        except Exception as e2:
+            print(f"   ✗ Error loading model: {e2}")
+            import traceback
+            traceback.print_exc()
+            return False
     
     # Load mapping
     print("\n3. Loading class mapping...")
@@ -73,10 +101,16 @@ def test_model_loading():
     # Test prediction with dummy image
     print("\n4. Testing prediction with dummy image...")
     try:
-        # Create a dummy RGB image (128x128)
-        dummy_img = np.random.rand(128, 128, 3).astype(np.float32)
+        # Get expected input size from model
+        expected_shape = model.input_shape[1:]  # Skip batch dimension
+        img_size = (expected_shape[0], expected_shape[1])
+        
+        # Create a dummy RGB image matching model input size
+        dummy_img = np.random.rand(img_size[0], img_size[1], 3).astype(np.float32)
+        dummy_img = dummy_img / 255.0  # Normalize to [0, 1]
         dummy_img = np.expand_dims(dummy_img, axis=0)
         
+        print(f"   Input shape: {dummy_img.shape}")
         predictions = model.predict(dummy_img, verbose=0)
         predicted_idx = np.argmax(predictions[0])
         confidence = predictions[0][predicted_idx] * 100
@@ -102,4 +136,3 @@ def test_model_loading():
 if __name__ == "__main__":
     success = test_model_loading()
     sys.exit(0 if success else 1)
-
