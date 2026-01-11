@@ -1,0 +1,37 @@
+# ============================================
+# Requirements for Agri ROBO Tomato
+# ============================================
+# Install in virtual environment (NOT globally)
+# 
+# Installation:
+# 1. Create virtual environment: python -m venv backend/venv
+# 2. Activate: backend\venv\Scripts\Activate.ps1 (Windows) or source backend/venv/bin/activate (Linux/Mac)
+# 3. Install: pip install -r requirements.txt
+#
+# Note: For Python 3.13, if NumPy installation fails:
+# pip install --only-binary :all: numpy
+# pip install -r requirements.txt
+
+# ============================================
+# Web Framework & Server
+# ============================================
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# ============================================
+# Machine Learning & Deep Learning
+# ============================================
+tensorflow>=2.10.0,<3.0.0
+numpy>=1.24.0
+scipy>=1.9.0
+
+# ============================================
+# Image Processing
+# ============================================
+Pillow>=9.0.0
+
+# ============================================
+# Testing & Development
+# ============================================
+requests>=2.31.0
