@@ -38,15 +38,15 @@ dist-ssr/
 # Machine Learning Models (Large Files)
 # ============================================
 # Model files are large - teammates should train their own or download separately
-*.h5
-*.hdf5
-*.pb
-*.tflite
-*.onnx
-*.pkl
-*.joblib
-*.ckpt
-*.weights
+# *.h5  # Commented out to allow committing model files
+# *.hdf5
+# *.pb
+# *.tflite
+# *.onnx
+# *.pkl
+# *.joblib
+# *.ckpt
+# *.weights
 
 # Keep class mapping (small JSON file)
 # class_mapping.json  # Uncomment if you want to exclude this too
@@ -59,12 +59,12 @@ train/
 val/
 data/
 datasets/
-*.jpg
-*.jpeg
-*.png
-*.JPG
-*.JPEG
-*.PNG
+# *.jpg  # Commented out to allow committing zip files
+# *.jpeg
+# *.png
+# *.JPG
+# *.JPEG
+# *.PNG
 # But allow small sample images if needed
 !sample_images/
 !examples/
