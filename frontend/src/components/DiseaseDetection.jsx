@@ -370,28 +370,6 @@ function DiseaseDetection() {
                 </div>
               </div>
 
-              {/* Top Predictions */}
-              {result.top_predictions && result.top_predictions.length > 0 && (
-                <div className="p-4 bg-gray-50 rounded-lg border border-gray-200">
-                  <h5 className="font-semibold text-gray-700 mb-3">Top Predictions:</h5>
-                  <div className="space-y-2">
-                    {result.top_predictions.map((pred, index) => (
-                      <div key={index} className="flex justify-between items-center p-2 bg-white rounded">
-                        <span className="text-sm text-gray-700">
-                          {index === 0 && '🥇 '}
-                          {index === 1 && '🥈 '}
-                          {index === 2 && '🥉 '}
-                          {pred.name}
-                        </span>
-                        <span className="text-sm font-semibold text-gray-800">
-                          {pred.confidence.toFixed(2)}%
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* Confidence Warning */}
               {result.confidence < 50 && (
                 <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">

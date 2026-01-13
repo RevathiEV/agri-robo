@@ -258,21 +258,6 @@ async def detect_disease(file: UploadFile = File(...)):
         else:
             formatted_disease = disease_name.replace("Tomato___", "").replace("_", " ").title()
         
-        # Get top 3 predictions
-        top_predictions = []
-        prediction_dict = {}
-        for idx, prob in enumerate(predictions[0]):
-            class_name = class_mapping.get(idx, "Unknown")
-            # Format class name (handle Not_A_Leaf and Tomato___ classes)
-            if class_name == "Not_A_Leaf":
-                formatted_name = "Not A Leaf"
-            else:
-                formatted_name = class_name.replace("Tomato___", "").replace("_", " ").title()
-            prediction_dict[formatted_name] = float(prob * 100)
-        
-        sorted_predictions = sorted(prediction_dict.items(), key=lambda x: x[1], reverse=True)
-        top_predictions = [{"name": name, "confidence": round(conf, 2)} for name, conf in sorted_predictions[:3]]
-        
         is_healthy = "healthy" in disease_name.lower()
         
         return JSONResponse({
@@ -280,7 +265,6 @@ async def detect_disease(file: UploadFile = File(...)):
             "disease": formatted_disease,
             "confidence": round(confidence, 2),
             "is_healthy": is_healthy,
-            "top_predictions": top_predictions,
             "raw_disease_name": disease_name,
             "model_info": {
                 "input_shape": str(model.input_shape),
