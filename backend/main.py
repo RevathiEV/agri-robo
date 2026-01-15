@@ -13,6 +13,7 @@ from typing import Optional
 import sys
 import threading
 import time
+import serial
 
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
@@ -29,6 +30,7 @@ except ImportError:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
+    global serial_connection
     # Startup
     try:
         load_model_and_mapping()
@@ -38,7 +40,21 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
         print("API will start but disease detection will not work until model is available.")
     
+    # Initialize serial connection to Bluetooth device
+    try:
+        serial_connection = serial.Serial('/dev/rfcomm0', 9600, timeout=1)
+        print("Bluetooth serial connection established to /dev/rfcomm0")
+    except Exception as e:
+        print(f"Warning: Could not connect to /dev/rfcomm0: {e}")
+        print("Motor and servo control will not be available.")
+        serial_connection = None
+    
     yield
+    
+    # Shutdown - close serial connection
+    if serial_connection and serial_connection.is_open:
+        serial_connection.close()
+        print("Bluetooth serial connection closed")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
@@ -70,6 +86,9 @@ camera = None
 camera_streaming = False
 camera_lock = threading.Lock()
 current_frame = None
+
+# Global variable for serial connection (Bluetooth)
+serial_connection = None
 
 def load_model_and_mapping():
     """Load the disease detection model and class mapping - TensorFlow 2.20.0 compatible"""
@@ -283,38 +302,52 @@ async def detect_disease(file: UploadFile = File(...)):
             detail=f"Error processing image: {str(e)}"
         )
 
-# Placeholder endpoints for motor and servo control (for future implementation)
+# Motor and servo control endpoints via Bluetooth serial
 @app.post("/api/motor/control")
 async def motor_control(direction: str):
     """
-    Control robot motors (placeholder for future GPIO implementation)
+    Control robot motors via Bluetooth serial connection
     """
+    global serial_connection
     valid_directions = ["front", "back", "left", "right", "stop"]
-    if direction.lthower() not in valid_directions:
+    if direction.lower() not in valid_directions:
         raise HTTPException(status_code=400, detail=f"Invalid direction. Must be one of: {valid_directions}")
     
-    # TODO: Implement GPIO control when Raspberry Pi is available
-    return {
-        "success": True,
-        "message": f"Motor command received: {direction}",
-        "note": "GPIO control not yet implemented"
-    }
+    if serial_connection is None or not serial_connection.is_open:
+        raise HTTPException(status_code=503, detail="Bluetooth serial connection not available")
+    
+    try:
+        command = f"MOTOR:{direction.upper()}\n"
+        serial_connection.write(command.encode())
+        return {
+            "success": True,
+            "message": f"Motor command sent: {direction}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
 
 @app.post("/api/servo/control")
 async def servo_control(action: str):
     """
-    Control servo motor for fertilizer (placeholder for future GPIO implementation)
+    Control servo motor for fertilizer via Bluetooth serial connection
     """
+    global serial_connection
     valid_actions = ["start", "stop"]
     if action.lower() not in valid_actions:
         raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {valid_actions}")
     
-    # TODO: Implement GPIO control when Raspberry Pi is available
-    return {
-        "success": True,
-        "message": f"Servo command received: {action}",
-        "note": "GPIO control not yet implemented"
-    }
+    if serial_connection is None or not serial_connection.is_open:
+        raise HTTPException(status_code=503, detail="Bluetooth serial connection not available")
+    
+    try:
+        command = f"SERVO:{action.upper()}\n"
+        serial_connection.write(command.encode())
+        return {
+            "success": True,
+            "message": f"Servo command sent: {action}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
 
 # ============================================
 # Camera Endpoints
