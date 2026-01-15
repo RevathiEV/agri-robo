@@ -307,6 +307,7 @@ async def detect_disease(file: UploadFile = File(...)):
 async def motor_control(direction: str):
     """
     Control robot motors via Bluetooth serial connection
+    ESP32 expects single character commands: F (forward), B (back), L (left), R (right), S (stop)
     """
     global serial_connection
     valid_directions = ["front", "back", "left", "right", "stop"]
@@ -317,11 +318,19 @@ async def motor_control(direction: str):
         raise HTTPException(status_code=503, detail="Bluetooth serial connection not available")
     
     try:
-        command = f"MOTOR:{direction.upper()}\n"
-        serial_connection.write(command.encode())
+        # Map direction to ESP32 single character command
+        command_map = {
+            "front": "F",
+            "back": "B",
+            "left": "L",
+            "right": "R",
+            "stop": "S"
+        }
+        cmd_char = command_map[direction.lower()]
+        serial_connection.write(cmd_char.encode())
         return {
             "success": True,
-            "message": f"Motor command sent: {direction}"
+            "message": f"Motor command sent: {direction} ({cmd_char})"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
@@ -330,6 +339,8 @@ async def motor_control(direction: str):
 async def servo_control(action: str):
     """
     Control servo motor for fertilizer via Bluetooth serial connection
+    ESP32 expects single character commands: A (start), X (stop)
+    Note: Servo control needs to be implemented in ESP32 code
     """
     global serial_connection
     valid_actions = ["start", "stop"]
@@ -340,11 +351,16 @@ async def servo_control(action: str):
         raise HTTPException(status_code=503, detail="Bluetooth serial connection not available")
     
     try:
-        command = f"SERVO:{action.upper()}\n"
-        serial_connection.write(command.encode())
+        # Map action to ESP32 single character command
+        command_map = {
+            "start": "A",
+            "stop": "X"
+        }
+        cmd_char = command_map[action.lower()]
+        serial_connection.write(cmd_char.encode())
         return {
             "success": True,
-            "message": f"Servo command sent: {action}"
+            "message": f"Servo command sent: {action} ({cmd_char})"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
