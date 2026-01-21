@@ -27,6 +27,18 @@ except ImportError:
     PICAMERA2_AVAILABLE = False
     print("Warning: picamera2 not available. Camera features will be disabled.")
 
+# Import spray pump control
+try:
+    from spray_pump_control import (
+        init_spray_pumps,
+        trigger_spray_by_disease,
+        cleanup_spray_pumps
+    )
+    SPRAY_PUMP_AVAILABLE = True
+except ImportError as e:
+    SPRAY_PUMP_AVAILABLE = False
+    print(f"Warning: Spray pump control not available: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
@@ -49,12 +61,20 @@ async def lifespan(app: FastAPI):
         print("Motor and servo control will not be available.")
         serial_connection = None
     
+    # Initialize spray pumps
+    if SPRAY_PUMP_AVAILABLE:
+        init_spray_pumps()
+    
     yield
     
-    # Shutdown - close serial connection
+    # Shutdown - close serial connection and cleanup spray pumps
     if serial_connection and serial_connection.is_open:
         serial_connection.close()
         print("Bluetooth serial connection closed")
+    
+    # Cleanup spray pumps
+    if SPRAY_PUMP_AVAILABLE:
+        cleanup_spray_pumps()
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
@@ -279,12 +299,18 @@ async def detect_disease(file: UploadFile = File(...)):
         
         is_healthy = "healthy" in disease_name.lower()
         
+        # Auto-trigger spray pump based on detected disease
+        spray_triggered = None
+        if SPRAY_PUMP_AVAILABLE and not is_healthy:
+            spray_triggered = trigger_spray_by_disease(disease_name)
+        
         return JSONResponse({
             "success": True,
             "disease": formatted_disease,
             "confidence": round(confidence, 2),
             "is_healthy": is_healthy,
             "raw_disease_name": disease_name,
+            "spray_triggered": spray_triggered,  # 'A', 'B', 'AB', or None
             "model_info": {
                 "input_shape": str(model.input_shape),
                 "num_classes": len(class_mapping)

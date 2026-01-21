@@ -337,7 +337,7 @@ function DiseaseDetection() {
                   ? 'bg-green-50 border-green-300'
                   : 'bg-yellow-50 border-yellow-300'
               }`}>
-                <div className="flex items-center gap-3 mb-2">
+                <div className="flex items-center gap-3">
                   <span className="text-3xl">
                     {result.is_healthy ? '✅' : '⚠️'}
                   </span>
@@ -350,34 +350,7 @@ function DiseaseDetection() {
                     </p>
                   </div>
                 </div>
-                <div className="mt-4">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-medium text-gray-700">Confidence:</span>
-                    <span className="text-lg font-bold text-gray-800">{result.confidence}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-3">
-                    <div
-                      className={`h-3 rounded-full transition-all ${
-                        result.confidence >= 70
-                          ? 'bg-green-500'
-                          : result.confidence >= 50
-                          ? 'bg-yellow-500'
-                          : 'bg-red-500'
-                      }`}
-                      style={{ width: `${result.confidence}%` }}
-                    ></div>
-                  </div>
-                </div>
               </div>
-
-              {/* Confidence Warning */}
-              {result.confidence < 50 && (
-                <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                  <p className="text-sm text-yellow-700">
-                    ⚠️ Low confidence prediction. Please verify with a clearer image.
-                  </p>
-                </div>
-              )}
             </div>
           )}
 
