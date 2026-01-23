@@ -21,6 +21,12 @@ SPRAY_PUMP_B_GPIO = 27  # GPIO 27 (Physical Pin 13) - Relay 2 (Motor B)
 # Spray duration in seconds
 SPRAY_DURATION = 3
 
+# Relay Configuration
+# Set to True for active LOW relays (LOW = ON, HIGH = OFF) - Most common
+# Set to False for active HIGH relays (HIGH = ON, LOW = OFF)
+# If motor doesn't turn on, try changing this to False
+RELAY_ACTIVE_LOW = True  # Change to False if your relay is active HIGH
+
 # Global flag to track initialization
 spray_pump_initialized = False
 
@@ -63,23 +69,23 @@ def init_spray_pumps():
         # Set GPIO mode to BCM (Broadcom pin numbering)
         GPIO.setmode(GPIO.BCM)
         
-        # Set up GPIO pins as outputs with initial HIGH value
-        # HIGH = OFF (for active LOW relays) or HIGH = ON (for active HIGH relays)
-        # Setting initial=GPIO.HIGH ensures pump is OFF on startup
-        GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=GPIO.HIGH)
-        GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=GPIO.HIGH)
+        # Set up GPIO pins as outputs with initial OFF state
+        # For active LOW: HIGH = OFF, LOW = ON
+        # For active HIGH: LOW = OFF, HIGH = ON
+        initial_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+        GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=initial_state)
+        GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=initial_state)
         
-        # Explicitly set to HIGH to ensure pumps are OFF
-        # If your relay is active LOW: HIGH = OFF, LOW = ON
-        # If your relay is active HIGH: HIGH = ON, LOW = OFF
-        # Adjust turn_on_pump() and turn_off_pump() if needed
-        GPIO.output(SPRAY_PUMP_A_GPIO, GPIO.HIGH)
-        GPIO.output(SPRAY_PUMP_B_GPIO, GPIO.HIGH)
+        # Explicitly set to OFF state to ensure pumps are OFF on startup
+        GPIO.output(SPRAY_PUMP_A_GPIO, initial_state)
+        GPIO.output(SPRAY_PUMP_B_GPIO, initial_state)
         
         spray_pump_initialized = True
+        relay_type_str = "Active LOW" if RELAY_ACTIVE_LOW else "Active HIGH"
         print(f"✓ Spray pumps initialized successfully")
         print(f"  - Motor A: GPIO {SPRAY_PUMP_A_GPIO} (Physical Pin 11)")
         print(f"  - Motor B: GPIO {SPRAY_PUMP_B_GPIO} (Physical Pin 13)")
+        print(f"  - Relay Type: {relay_type_str} (LOW=ON, HIGH=OFF)" if RELAY_ACTIVE_LOW else f"  - Relay Type: {relay_type_str} (HIGH=ON, LOW=OFF)")
         return True
         
     except Exception as e:
@@ -102,17 +108,22 @@ def turn_on_pump(motor):
         return False
     
     try:
-        # For active LOW relays: LOW = ON, HIGH = OFF
+        # Support both active LOW and active HIGH relays
+        on_state = GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
+        
         if motor == "A":
-            GPIO.output(SPRAY_PUMP_A_GPIO, GPIO.LOW)  # LOW turns ON for active LOW relay
-            print(f"Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned ON")
+            GPIO.output(SPRAY_PUMP_A_GPIO, on_state)
+            relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
+            print(f"Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned ON (GPIO={relay_type})")
         elif motor == "B":
-            GPIO.output(SPRAY_PUMP_B_GPIO, GPIO.LOW)  # LOW turns ON for active LOW relay
-            print(f"Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned ON")
+            GPIO.output(SPRAY_PUMP_B_GPIO, on_state)
+            relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
+            print(f"Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned ON (GPIO={relay_type})")
         elif motor == "AB":
-            GPIO.output(SPRAY_PUMP_A_GPIO, GPIO.LOW)  # LOW turns ON for active LOW relay
-            GPIO.output(SPRAY_PUMP_B_GPIO, GPIO.LOW)  # LOW turns ON for active LOW relay
-            print(f"Both Motors A & B turned ON")
+            GPIO.output(SPRAY_PUMP_A_GPIO, on_state)
+            GPIO.output(SPRAY_PUMP_B_GPIO, on_state)
+            relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
+            print(f"Both Motors A & B turned ON (GPIO={relay_type})")
         else:
             print(f"Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
             return False
@@ -136,16 +147,18 @@ def turn_off_pump(motor):
         return False
     
     try:
-        # For active LOW relays: LOW = ON, HIGH = OFF
+        # Support both active LOW and active HIGH relays
+        off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+        
         if motor == "A":
-            GPIO.output(SPRAY_PUMP_A_GPIO, GPIO.HIGH)  # HIGH turns OFF for active LOW relay
+            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
             print(f"Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned OFF")
         elif motor == "B":
-            GPIO.output(SPRAY_PUMP_B_GPIO, GPIO.HIGH)  # HIGH turns OFF for active LOW relay
+            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
             print(f"Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned OFF")
         elif motor == "AB":
-            GPIO.output(SPRAY_PUMP_A_GPIO, GPIO.HIGH)  # HIGH turns OFF for active LOW relay
-            GPIO.output(SPRAY_PUMP_B_GPIO, GPIO.HIGH)  # HIGH turns OFF for active LOW relay
+            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
+            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
             print(f"Both Motors A & B turned OFF")
         else:
             print(f"Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
@@ -236,9 +249,10 @@ def cleanup_spray_pumps():
     
     if spray_pump_initialized and GPIO_AVAILABLE:
         try:
-            # Turn off all pumps
-            GPIO.output(SPRAY_PUMP_A_GPIO, GPIO.LOW)
-            GPIO.output(SPRAY_PUMP_B_GPIO, GPIO.LOW)
+            # Turn off all pumps (use OFF state, not LOW)
+            off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
+            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
             
             # Cleanup GPIO
             GPIO.cleanup()
@@ -268,32 +282,121 @@ def get_status():
     }
 
 
+def test_relay_type(motor="A", test_duration=2):
+    """
+    Test function to identify relay type (active LOW vs active HIGH)
+    Tests both types and asks user which one worked
+    """
+    if not GPIO_AVAILABLE:
+        print("GPIO not available - cannot test relay type")
+        return None
+    
+    print("=" * 60)
+    print("Relay Type Test - Motor", motor)
+    print("=" * 60)
+    print("\nThis will test both relay types to find which one works.")
+    print("Watch your motor and listen for the relay click.\n")
+    
+    # Initialize GPIO
+    GPIO.setmode(GPIO.BCM)
+    gpio_pin = SPRAY_PUMP_A_GPIO if motor == "A" else SPRAY_PUMP_B_GPIO
+    GPIO.setup(gpio_pin, GPIO.OUT)
+    
+    try:
+        # Test 1: Active LOW (LOW = ON)
+        print("Test 1: Testing ACTIVE LOW (LOW = ON, HIGH = OFF)")
+        print(f"Setting GPIO {gpio_pin} to LOW (should turn motor ON)...")
+        GPIO.output(gpio_pin, GPIO.LOW)
+        print(f"Motor should be ON now. Did it turn on? (waiting {test_duration} seconds)")
+        time.sleep(test_duration)
+        GPIO.output(gpio_pin, GPIO.HIGH)
+        print("Setting GPIO to HIGH (should turn motor OFF)")
+        time.sleep(1)
+        
+        response1 = input("\nDid the motor turn ON when GPIO was LOW? (y/n): ").lower().strip()
+        
+        # Test 2: Active HIGH (HIGH = ON)
+        print("\nTest 2: Testing ACTIVE HIGH (HIGH = ON, LOW = OFF)")
+        print(f"Setting GPIO {gpio_pin} to HIGH (should turn motor ON)...")
+        GPIO.output(gpio_pin, GPIO.HIGH)
+        print(f"Motor should be ON now. Did it turn on? (waiting {test_duration} seconds)")
+        time.sleep(test_duration)
+        GPIO.output(gpio_pin, GPIO.LOW)
+        print("Setting GPIO to LOW (should turn motor OFF)")
+        time.sleep(1)
+        
+        response2 = input("\nDid the motor turn ON when GPIO was HIGH? (y/n): ").lower().strip()
+        
+        # Determine relay type
+        if response1 == 'y' and response2 != 'y':
+            print("\n✓ Result: Your relay is ACTIVE LOW (LOW = ON, HIGH = OFF)")
+            print("  Current setting RELAY_ACTIVE_LOW = True is CORRECT")
+            return True
+        elif response2 == 'y' and response1 != 'y':
+            print("\n✓ Result: Your relay is ACTIVE HIGH (HIGH = ON, LOW = OFF)")
+            print("  You need to change RELAY_ACTIVE_LOW = False in the code")
+            return False
+        elif response1 == 'y' and response2 == 'y':
+            print("\n⚠ Warning: Motor turned on in both tests!")
+            print("  Check your wiring - motor circuit might be always connected")
+            return None
+        else:
+            print("\n✗ Motor didn't turn on in either test!")
+            print("  Check:")
+            print("  1. Motor circuit wiring (9V battery, relay COM/NO, motor)")
+            print("  2. Relay module power (VCC to 5V, GND to GND)")
+            print("  3. Relay module jumper settings")
+            return None
+            
+    finally:
+        # Turn off motor
+        GPIO.output(gpio_pin, GPIO.HIGH)
+        time.sleep(0.5)
+        GPIO.output(gpio_pin, GPIO.LOW)
+        time.sleep(0.5)
+        GPIO.output(gpio_pin, GPIO.HIGH)
+        GPIO.cleanup()
+
+
 # Test function (run when executed directly)
 if __name__ == "__main__":
-    print("=" * 60)
-    print("Spray Pump Control - Test Mode")
-    print("=" * 60)
+    import sys
     
-    # Initialize
-    init_spray_pumps()
-    
-    if spray_pump_initialized or not GPIO_AVAILABLE:
-        print("\nTesting Motor A (3 seconds)...")
-        trigger_spray_pump("A", duration=3)
-        time.sleep(4)  # Wait for spray to complete
-        
-        print("\nTesting Motor B (3 seconds)...")
-        trigger_spray_pump("B", duration=3)
-        time.sleep(4)  # Wait for spray to complete
-        
-        print("\nTesting Both Motors (3 seconds)...")
-        trigger_spray_pump("AB", duration=3)
-        time.sleep(4)  # Wait for spray to complete
-        
-        print("\nTest completed!")
+    # Check if user wants to test relay type
+    if len(sys.argv) > 1 and sys.argv[1] == "test-relay":
+        motor_to_test = sys.argv[2] if len(sys.argv) > 2 else "A"
+        test_relay_type(motor_to_test)
     else:
-        print("Failed to initialize spray pumps")
-    
-    # Cleanup
-    cleanup_spray_pumps()
-    print("\nStatus:", get_status())
+        print("=" * 60)
+        print("Spray Pump Control - Test Mode")
+        print("=" * 60)
+        print(f"Current relay setting: {'Active LOW' if RELAY_ACTIVE_LOW else 'Active HIGH'}")
+        print("\nTo test relay type, run: python spray_pump_control.py test-relay [A|B]")
+        print("=" * 60)
+        
+        # Initialize
+        init_spray_pumps()
+        
+        if spray_pump_initialized or not GPIO_AVAILABLE:
+            print("\nTesting Motor A (3 seconds)...")
+            trigger_spray_pump("A", duration=3)
+            time.sleep(4)  # Wait for spray to complete
+            
+            print("\nTesting Motor B (3 seconds)...")
+            trigger_spray_pump("B", duration=3)
+            time.sleep(4)  # Wait for spray to complete
+            
+            print("\nTesting Both Motors (3 seconds)...")
+            trigger_spray_pump("AB", duration=3)
+            time.sleep(4)  # Wait for spray to complete
+            
+            print("\nTest completed!")
+            print("\nIf motor didn't turn on, try:")
+            print("  1. Run: python spray_pump_control.py test-relay A")
+            print("  2. Change RELAY_ACTIVE_LOW to False if test shows active HIGH")
+        else:
+            print("Failed to initialize spray pumps")
+        
+        # Cleanup
+        cleanup_spray_pumps()
+        print("\nStatus:", get_status())
