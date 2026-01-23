@@ -25,7 +25,7 @@ SPRAY_DURATION = 3
 # Set to True for active LOW relays (LOW = ON, HIGH = OFF) - Most common
 # Set to False for active HIGH relays (HIGH = ON, LOW = OFF)
 # If motor doesn't turn on, try changing this to False
-RELAY_ACTIVE_LOW = True  # Change to False if your relay is active HIGH
+RELAY_ACTIVE_LOW = False  # Change to False if your relay is active HIGH
 
 # Global flag to track initialization
 spray_pump_initialized = False
