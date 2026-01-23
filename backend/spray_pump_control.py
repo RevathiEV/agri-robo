@@ -25,7 +25,7 @@ SPRAY_DURATION = 3
 # Set to True for active LOW relays (LOW = ON, HIGH = OFF) - Most common
 # Set to False for active HIGH relays (HIGH = ON, LOW = OFF)
 # If motor doesn't turn on, try changing this to False
-RELAY_ACTIVE_LOW = False  # Change to False if your relay is active HIGH
+RELAY_ACTIVE_LOW = False  # True = Active LOW (LOW=ON, HIGH=OFF), False = Active HIGH (HIGH=ON, LOW=OFF)
 
 # Global flag to track initialization
 spray_pump_initialized = False
@@ -81,25 +81,50 @@ def init_spray_pumps():
         # For active LOW: HIGH = OFF, LOW = ON
         # For active HIGH: LOW = OFF, HIGH = ON
         off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+        on_state = GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
         
-        print(f"[INIT] Setting up GPIO pins with OFF state (GPIO={'HIGH' if RELAY_ACTIVE_LOW else 'LOW'})")
+        print(f"[INIT] Relay type: {'Active LOW' if RELAY_ACTIVE_LOW else 'Active HIGH'}")
+        print(f"[INIT] OFF state = GPIO.{'HIGH' if RELAY_ACTIVE_LOW else 'LOW'}, ON state = GPIO.{'LOW' if RELAY_ACTIVE_LOW else 'HIGH'}")
         
-        # IMPORTANT: Set pins to OFF state FIRST (before configuring as outputs)
-        # This prevents motors from turning on during initialization
+        # CRITICAL: For Active HIGH relays, we need to ensure pins are LOW (OFF) immediately
+        # Set pins as inputs first with pull-down to ensure they're LOW
+        if not RELAY_ACTIVE_LOW:  # Active HIGH relay
+            print("[INIT] Setting pins as inputs with pull-down first (Active HIGH relay)")
+            GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+            GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+            import time
+            time.sleep(0.05)  # Small delay to ensure pull-down takes effect
+        
+        # Now configure as outputs with OFF state
+        print(f"[INIT] Configuring pins as outputs with initial OFF state")
         GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=off_state)
         GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=off_state)
         
-        # Explicitly set to OFF state again (double-check)
-        GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-        GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-        
-        # Small delay to ensure state is stable
+        # Explicitly set to OFF state multiple times to ensure it sticks
         import time
-        time.sleep(0.1)
+        for i in range(3):
+            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
+            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
+            time.sleep(0.05)
         
-        # Verify pins are in OFF state
-        # Note: GPIO.input() might not work for outputs, but we've set them explicitly
-        print(f"[INIT] GPIO pins set to OFF state")
+        # Verify the state by reading back (if possible)
+        try:
+            # Temporarily switch to input to read state
+            GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.IN)
+            read_state_a = GPIO.input(SPRAY_PUMP_A_GPIO)
+            GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=off_state)
+            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
+            
+            GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.IN)
+            read_state_b = GPIO.input(SPRAY_PUMP_B_GPIO)
+            GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=off_state)
+            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
+            
+            print(f"[INIT] Verified GPIO state - Motor A: {read_state_a}, Motor B: {read_state_b} (should be {off_state})")
+        except Exception as e:
+            print(f"[INIT] Could not verify GPIO state: {e}")
+        
+        print(f"[INIT] GPIO pins configured and set to OFF state (GPIO={off_state})")
         
         spray_pump_initialized = True
         relay_type_str = "Active LOW" if RELAY_ACTIVE_LOW else "Active HIGH"

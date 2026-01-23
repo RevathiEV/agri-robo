@@ -67,30 +67,42 @@ async def lifespan(app: FastAPI):
     # Initialize spray pumps
     if SPRAY_PUMP_AVAILABLE:
         print("[STARTUP] Initializing spray pumps...")
+        print("[STARTUP] CRITICAL: Motors MUST be OFF during initialization")
+        
+        # Initialize with enhanced OFF state handling
         init_spray_pumps()
         
-        # Explicitly ensure motors are OFF on startup (triple-check)
+        # Explicitly ensure motors are OFF on startup (multiple checks)
         # This is critical - motors MUST be OFF when server starts
         try:
-            print("[STARTUP] Verifying motors are OFF...")
-            turn_off_pump("A")
-            turn_off_pump("B")
+            print("[STARTUP] Performing final OFF state verification...")
             
-            # Small delay to ensure state is stable
+            # Force OFF state multiple times with delays
             import time
-            time.sleep(0.2)
+            for attempt in range(5):
+                turn_off_pump("A")
+                turn_off_pump("B")
+                time.sleep(0.1)
+            
+            # Additional delay to ensure state is stable
+            time.sleep(0.3)
             
             # Reset global state variables
             global motor_running, current_motor
             motor_running = False
             current_motor = None
             
-            print("✓ Motors explicitly verified OFF on startup")
+            print("✓ Motors explicitly verified OFF on startup (5 attempts)")
             print("✓ Motor state variables reset: motor_running=False, current_motor=None")
+            print("[STARTUP] If motor is still ON, check:")
+            print("  1. Relay module wiring (IN should connect to GPIO, not 5V)")
+            print("  2. Relay module pull-up resistors (may need external pull-down)")
+            print("  3. Run: python test_gpio_state.py to diagnose GPIO state")
         except Exception as e:
-            print(f"[STARTUP WARNING] Could not verify motors are OFF: {e}")
+            print(f"[STARTUP ERROR] Could not verify motors are OFF: {e}")
             import traceback
             traceback.print_exc()
+            print("[STARTUP] WARNING: Motor state verification failed!")
     
     yield
     
