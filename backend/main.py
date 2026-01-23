@@ -32,7 +32,10 @@ try:
     from spray_pump_control import (
         init_spray_pumps,
         trigger_spray_by_disease,
-        cleanup_spray_pumps
+        cleanup_spray_pumps,
+        turn_on_pump,
+        turn_off_pump,
+        DISEASE_MOTOR_MAPPING
     )
     SPRAY_PUMP_AVAILABLE = True
 except ImportError as e:
@@ -109,6 +112,11 @@ current_frame = None
 
 # Global variable for serial connection (Bluetooth)
 serial_connection = None
+
+# Global variables for spray pump control
+last_detected_disease = None  # Store last detected disease (only real diseases, not healthy/not a leaf)
+motor_running = False  # Track if motor is currently running
+current_motor = None  # Track which motor(s) are currently running ('A', 'B', or 'AB')
 
 def load_model_and_mapping():
     """Load the disease detection model and class mapping - TensorFlow 2.20.0 compatible"""
@@ -298,19 +306,38 @@ async def detect_disease(file: UploadFile = File(...)):
             formatted_disease = disease_name.replace("Tomato___", "").replace("_", " ").title()
         
         is_healthy = "healthy" in disease_name.lower()
+        is_not_a_leaf = disease_name == "Not_A_Leaf"
         
-        # Auto-trigger spray pump based on detected disease
-        spray_triggered = None
-        if SPRAY_PUMP_AVAILABLE and not is_healthy:
-            spray_triggered = trigger_spray_by_disease(disease_name)
+        # Store last detected disease (only if it's a real disease, not healthy/not a leaf)
+        global last_detected_disease, motor_running, current_motor
+        
+        # If new disease detected while motor is running, stop the motor
+        # (User needs to manually start dispenser for new disease)
+        if motor_running and current_motor and not is_healthy and not is_not_a_leaf:
+            if disease_name in DISEASE_MOTOR_MAPPING:
+                new_motor = DISEASE_MOTOR_MAPPING[disease_name]
+                # Always stop current motor when new disease is detected
+                # User must click Start Dispenser again for the new disease
+                if SPRAY_PUMP_AVAILABLE:
+                    turn_off_pump(current_motor)
+                motor_running = False
+                current_motor = None
+                print(f"Motor stopped due to new disease detection: {disease_name}. User must start dispenser again.")
+        
+        # Store disease only if it's a real disease (not healthy/not a leaf)
+        if not is_healthy and not is_not_a_leaf and disease_name in DISEASE_MOTOR_MAPPING:
+            last_detected_disease = disease_name
+        else:
+            last_detected_disease = None
         
         return JSONResponse({
             "success": True,
             "disease": formatted_disease,
             "confidence": round(confidence, 2),
             "is_healthy": is_healthy,
+            "is_not_a_leaf": is_not_a_leaf,
             "raw_disease_name": disease_name,
-            "spray_triggered": spray_triggered,  # 'A', 'B', 'AB', or None
+            "can_spray": not is_healthy and not is_not_a_leaf and disease_name in DISEASE_MOTOR_MAPPING,
             "model_info": {
                 "input_shape": str(model.input_shape),
                 "num_classes": len(class_mapping)
@@ -390,6 +417,107 @@ async def servo_control(action: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
+
+# Spray pump control endpoints
+@app.post("/api/spray/start")
+async def start_spray():
+    """
+    Start spray pump based on last detected disease.
+    Motor runs continuously until stop is called.
+    """
+    global last_detected_disease, motor_running, current_motor
+    
+    if not SPRAY_PUMP_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Spray pump control not available")
+    
+    # Check if a disease was detected
+    if last_detected_disease is None:
+        raise HTTPException(
+            status_code=400, 
+            detail="No disease detected. Please detect a disease first before starting the dispenser."
+        )
+    
+    # Check if disease is in mapping
+    if last_detected_disease not in DISEASE_MOTOR_MAPPING:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Disease '{last_detected_disease}' does not have a motor mapping."
+        )
+    
+    # Stop any currently running motor
+    if motor_running and current_motor:
+        try:
+            turn_off_pump(current_motor)
+        except Exception as e:
+            print(f"Error stopping previous motor: {e}")
+    
+    # Get motor for this disease
+    motor = DISEASE_MOTOR_MAPPING[last_detected_disease]
+    
+    # Start the motor
+    try:
+        success = turn_on_pump(motor)
+        if success:
+            motor_running = True
+            current_motor = motor
+            return {
+                "success": True,
+                "message": f"Spray dispenser started for {last_detected_disease}",
+                "motor": motor,
+                "disease": last_detected_disease
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to start spray pump")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error starting spray pump: {str(e)}")
+
+@app.post("/api/spray/stop")
+async def stop_spray():
+    """
+    Stop the currently running spray pump.
+    """
+    global motor_running, current_motor
+    
+    if not SPRAY_PUMP_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Spray pump control not available")
+    
+    if not motor_running or not current_motor:
+        return {
+            "success": True,
+            "message": "No motor is currently running",
+            "motor_was_running": False
+        }
+    
+    try:
+        success = turn_off_pump(current_motor)
+        if success:
+            motor_running = False
+            stopped_motor = current_motor
+            current_motor = None
+            return {
+                "success": True,
+                "message": f"Spray dispenser stopped",
+                "motor": stopped_motor
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to stop spray pump")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error stopping spray pump: {str(e)}")
+
+@app.get("/api/spray/status")
+async def get_spray_status():
+    """
+    Get current spray pump status.
+    """
+    global last_detected_disease, motor_running, current_motor
+    
+    return {
+        "success": True,
+        "last_detected_disease": last_detected_disease,
+        "motor_running": motor_running,
+        "current_motor": current_motor,
+        "can_start": last_detected_disease is not None and last_detected_disease in DISEASE_MOTOR_MAPPING
+    }
 
 # ============================================
 # Camera Endpoints
