@@ -102,7 +102,7 @@ def turn_on_pump(motor):
     """
     if not spray_pump_initialized:
         if GPIO_AVAILABLE:
-            print("Spray pumps not initialized. Call init_spray_pumps() first.")
+            print("[TURN_ON_PUMP] Spray pumps not initialized. Call init_spray_pumps() first.")
         else:
             print(f"[SIMULATION] Motor {motor} ON")
         return False
@@ -114,22 +114,24 @@ def turn_on_pump(motor):
         if motor == "A":
             GPIO.output(SPRAY_PUMP_A_GPIO, on_state)
             relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
-            print(f"Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned ON (GPIO={relay_type})")
+            print(f"[TURN_ON_PUMP] Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned ON (GPIO={relay_type})")
         elif motor == "B":
             GPIO.output(SPRAY_PUMP_B_GPIO, on_state)
             relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
-            print(f"Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned ON (GPIO={relay_type})")
+            print(f"[TURN_ON_PUMP] Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned ON (GPIO={relay_type})")
         elif motor == "AB":
             GPIO.output(SPRAY_PUMP_A_GPIO, on_state)
             GPIO.output(SPRAY_PUMP_B_GPIO, on_state)
             relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
-            print(f"Both Motors A & B turned ON (GPIO={relay_type})")
+            print(f"[TURN_ON_PUMP] Both Motors A & B turned ON (GPIO={relay_type})")
         else:
-            print(f"Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
+            print(f"[TURN_ON_PUMP] Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
             return False
         return True
     except Exception as e:
-        print(f"Error turning on pump: {e}")
+        print(f"[TURN_ON_PUMP ERROR] Error turning on pump: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -141,7 +143,7 @@ def turn_off_pump(motor):
     """
     if not spray_pump_initialized:
         if GPIO_AVAILABLE:
-            print("Spray pumps not initialized. Call init_spray_pumps() first.")
+            print("[TURN_OFF_PUMP] Spray pumps not initialized. Call init_spray_pumps() first.")
         else:
             print(f"[SIMULATION] Motor {motor} OFF")
         return False
@@ -152,20 +154,22 @@ def turn_off_pump(motor):
         
         if motor == "A":
             GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-            print(f"Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned OFF")
+            print(f"[TURN_OFF_PUMP] Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned OFF")
         elif motor == "B":
             GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-            print(f"Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned OFF")
+            print(f"[TURN_OFF_PUMP] Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned OFF")
         elif motor == "AB":
             GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
             GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-            print(f"Both Motors A & B turned OFF")
+            print(f"[TURN_OFF_PUMP] Both Motors A & B turned OFF")
         else:
-            print(f"Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
+            print(f"[TURN_OFF_PUMP] Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
             return False
         return True
     except Exception as e:
-        print(f"Error turning off pump: {e}")
+        print(f"[TURN_OFF_PUMP ERROR] Error turning off pump: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

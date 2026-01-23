@@ -67,6 +67,17 @@ async def lifespan(app: FastAPI):
     # Initialize spray pumps
     if SPRAY_PUMP_AVAILABLE:
         init_spray_pumps()
+        # Explicitly ensure motors are OFF on startup (double-check)
+        try:
+            turn_off_pump("A")
+            turn_off_pump("B")
+            # Reset global state
+            global motor_running, current_motor
+            motor_running = False
+            current_motor = None
+            print("✓ Motors explicitly set to OFF on startup (state reset)")
+        except Exception as e:
+            print(f"Warning: Could not ensure motors are OFF: {e}")
     
     yield
     
@@ -327,8 +338,10 @@ async def detect_disease(file: UploadFile = File(...)):
         # Store disease only if it's a real disease (not healthy/not a leaf)
         if not is_healthy and not is_not_a_leaf and disease_name in DISEASE_MOTOR_MAPPING:
             last_detected_disease = disease_name
+            print(f"[DISEASE DETECTED] Stored disease: {disease_name}, Motor mapping: {DISEASE_MOTOR_MAPPING[disease_name]}")
         else:
             last_detected_disease = None
+            print(f"[DISEASE DETECTED] No motor action needed for: {disease_name} (healthy or not a leaf)")
         
         return JSONResponse({
             "success": True,
@@ -456,10 +469,12 @@ async def start_spray():
     
     # Start the motor
     try:
+        print(f"[SPRAY START] Starting motor {motor} for disease: {last_detected_disease}")
         success = turn_on_pump(motor)
         if success:
             motor_running = True
             current_motor = motor
+            print(f"[SPRAY START] Motor {motor} started successfully. State: motor_running={motor_running}, current_motor={current_motor}")
             return {
                 "success": True,
                 "message": f"Spray dispenser started for {last_detected_disease}",
@@ -469,6 +484,7 @@ async def start_spray():
         else:
             raise HTTPException(status_code=500, detail="Failed to start spray pump")
     except Exception as e:
+        print(f"[SPRAY START ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error starting spray pump: {str(e)}")
 
 @app.post("/api/spray/stop")
@@ -489,11 +505,13 @@ async def stop_spray():
         }
     
     try:
+        print(f"[SPRAY STOP] Stopping motor {current_motor}")
         success = turn_off_pump(current_motor)
         if success:
-            motor_running = False
             stopped_motor = current_motor
+            motor_running = False
             current_motor = None
+            print(f"[SPRAY STOP] Motor {stopped_motor} stopped successfully. State: motor_running={motor_running}, current_motor={current_motor}")
             return {
                 "success": True,
                 "message": f"Spray dispenser stopped",
@@ -502,6 +520,7 @@ async def stop_spray():
         else:
             raise HTTPException(status_code=500, detail="Failed to stop spray pump")
     except Exception as e:
+        print(f"[SPRAY STOP ERROR] {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error stopping spray pump: {str(e)}")
 
 @app.get("/api/spray/status")
