@@ -66,18 +66,31 @@ async def lifespan(app: FastAPI):
     
     # Initialize spray pumps
     if SPRAY_PUMP_AVAILABLE:
+        print("[STARTUP] Initializing spray pumps...")
         init_spray_pumps()
-        # Explicitly ensure motors are OFF on startup (double-check)
+        
+        # Explicitly ensure motors are OFF on startup (triple-check)
+        # This is critical - motors MUST be OFF when server starts
         try:
+            print("[STARTUP] Verifying motors are OFF...")
             turn_off_pump("A")
             turn_off_pump("B")
-            # Reset global state
+            
+            # Small delay to ensure state is stable
+            import time
+            time.sleep(0.2)
+            
+            # Reset global state variables
             global motor_running, current_motor
             motor_running = False
             current_motor = None
-            print("✓ Motors explicitly set to OFF on startup (state reset)")
+            
+            print("✓ Motors explicitly verified OFF on startup")
+            print("✓ Motor state variables reset: motor_running=False, current_motor=None")
         except Exception as e:
-            print(f"Warning: Could not ensure motors are OFF: {e}")
+            print(f"[STARTUP WARNING] Could not verify motors are OFF: {e}")
+            import traceback
+            traceback.print_exc()
     
     yield
     

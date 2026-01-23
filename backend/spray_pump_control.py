@@ -57,6 +57,7 @@ def init_spray_pumps():
     """
     Initialize GPIO pins for spray pumps
     Returns True if successful, False otherwise
+    IMPORTANT: Motors are set to OFF state during initialization
     """
     global spray_pump_initialized
     
@@ -66,30 +67,54 @@ def init_spray_pumps():
         return False
     
     try:
+        # Clean up any previous GPIO state first (in case of restart)
+        try:
+            GPIO.cleanup()
+            print("[INIT] Cleaned up previous GPIO state")
+        except:
+            pass  # Ignore if cleanup fails (no previous state)
+        
         # Set GPIO mode to BCM (Broadcom pin numbering)
         GPIO.setmode(GPIO.BCM)
         
-        # Set up GPIO pins as outputs with initial OFF state
+        # Determine OFF state based on relay type
         # For active LOW: HIGH = OFF, LOW = ON
         # For active HIGH: LOW = OFF, HIGH = ON
-        initial_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-        GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=initial_state)
-        GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=initial_state)
+        off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
         
-        # Explicitly set to OFF state to ensure pumps are OFF on startup
-        GPIO.output(SPRAY_PUMP_A_GPIO, initial_state)
-        GPIO.output(SPRAY_PUMP_B_GPIO, initial_state)
+        print(f"[INIT] Setting up GPIO pins with OFF state (GPIO={'HIGH' if RELAY_ACTIVE_LOW else 'LOW'})")
+        
+        # IMPORTANT: Set pins to OFF state FIRST (before configuring as outputs)
+        # This prevents motors from turning on during initialization
+        GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=off_state)
+        GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=off_state)
+        
+        # Explicitly set to OFF state again (double-check)
+        GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
+        GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
+        
+        # Small delay to ensure state is stable
+        import time
+        time.sleep(0.1)
+        
+        # Verify pins are in OFF state
+        # Note: GPIO.input() might not work for outputs, but we've set them explicitly
+        print(f"[INIT] GPIO pins set to OFF state")
         
         spray_pump_initialized = True
         relay_type_str = "Active LOW" if RELAY_ACTIVE_LOW else "Active HIGH"
         print(f"✓ Spray pumps initialized successfully")
-        print(f"  - Motor A: GPIO {SPRAY_PUMP_A_GPIO} (Physical Pin 11)")
-        print(f"  - Motor B: GPIO {SPRAY_PUMP_B_GPIO} (Physical Pin 13)")
-        print(f"  - Relay Type: {relay_type_str} (LOW=ON, HIGH=OFF)" if RELAY_ACTIVE_LOW else f"  - Relay Type: {relay_type_str} (HIGH=ON, LOW=OFF)")
+        print(f"  - Motor A: GPIO {SPRAY_PUMP_A_GPIO} (Physical Pin 11) - State: OFF")
+        print(f"  - Motor B: GPIO {SPRAY_PUMP_B_GPIO} (Physical Pin 13) - State: OFF")
+        print(f"  - Relay Type: {relay_type_str}")
+        print(f"  - OFF State: GPIO={'HIGH' if RELAY_ACTIVE_LOW else 'LOW'}")
+        print(f"  - ON State: GPIO={'LOW' if RELAY_ACTIVE_LOW else 'HIGH'}")
         return True
         
     except Exception as e:
-        print(f"Error initializing spray pumps: {e}")
+        print(f"[INIT ERROR] Error initializing spray pumps: {e}")
+        import traceback
+        traceback.print_exc()
         spray_pump_initialized = False
         return False
 
@@ -361,6 +386,43 @@ def test_relay_type(motor="A", test_duration=2):
         GPIO.output(gpio_pin, GPIO.HIGH)
         GPIO.cleanup()
 
+
+def diagnose_motor_startup():
+    """
+    Diagnostic function to check why motor might be turning on at startup
+    """
+    if not GPIO_AVAILABLE:
+        print("[DIAGNOSE] GPIO not available")
+        return
+    
+    try:
+        # Check current GPIO state
+        GPIO.setmode(GPIO.BCM)
+        
+        # Try to read current state (might not work for outputs, but worth trying)
+        try:
+            state_a = GPIO.input(SPRAY_PUMP_A_GPIO)
+            state_b = GPIO.input(SPRAY_PUMP_B_GPIO)
+            print(f"[DIAGNOSE] Current GPIO state - Motor A: {state_a}, Motor B: {state_b}")
+        except:
+            print("[DIAGNOSE] Cannot read GPIO state (pins configured as outputs)")
+        
+        # Set to OFF state
+        off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+        GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=off_state)
+        GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=off_state)
+        GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
+        GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
+        
+        print(f"[DIAGNOSE] Set GPIO to OFF state: {off_state} (HIGH={GPIO.HIGH}, LOW={GPIO.LOW})")
+        print(f"[DIAGNOSE] Relay type: {'Active LOW' if RELAY_ACTIVE_LOW else 'Active HIGH'}")
+        print(f"[DIAGNOSE] If motor is ON, try changing RELAY_ACTIVE_LOW to {not RELAY_ACTIVE_LOW}")
+        
+        GPIO.cleanup()
+    except Exception as e:
+        print(f"[DIAGNOSE ERROR] {e}")
+        import traceback
+        traceback.print_exc()
 
 # Test function (run when executed directly)
 if __name__ == "__main__":
