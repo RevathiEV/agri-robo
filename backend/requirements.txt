@@ -40,3 +40,11 @@ requests>=2.31.0
 # Serial Communication (Bluetooth)
 # ============================================
 pyserial>=3.5
+
+# ============================================
+# GPIO Control (Raspberry Pi)
+# ============================================
+# Note: RPi.GPIO is usually installed via apt on Raspberry Pi:
+# sudo apt-get install python3-rpi.gpio
+# But can also be installed via pip:
+RPi.GPIO>=0.7.1

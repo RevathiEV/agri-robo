@@ -27,20 +27,32 @@ except ImportError:
     PICAMERA2_AVAILABLE = False
     print("Warning: picamera2 not available. Camera features will be disabled.")
 
-# Import spray pump control
+# Try to import RPi.GPIO for motor control
 try:
-    from spray_pump_control import (
-        init_spray_pumps,
-        trigger_spray_by_disease,
-        cleanup_spray_pumps,
-        turn_on_pump,
-        turn_off_pump,
-        DISEASE_MOTOR_MAPPING
-    )
-    SPRAY_PUMP_AVAILABLE = True
-except ImportError as e:
-    SPRAY_PUMP_AVAILABLE = False
-    print(f"Warning: Spray pump control not available: {e}")
+    import RPi.GPIO as GPIO
+    GPIO_AVAILABLE = True
+except (ImportError, RuntimeError):
+    GPIO_AVAILABLE = False
+    print("Warning: RPi.GPIO not available. Motor control via GPIO will be disabled.")
+    # Create a dummy GPIO class for non-Pi systems
+    class GPIO:
+        BCM = None
+        OUT = None
+        LOW = 0
+        HIGH = 1
+        @staticmethod
+        def setmode(mode):
+            pass
+        @staticmethod
+        def setup(pin, mode):
+            pass
+        @staticmethod
+        def output(pin, state):
+            pass
+        @staticmethod
+        def cleanup():
+            pass
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -64,56 +76,34 @@ async def lifespan(app: FastAPI):
         print("Motor and servo control will not be available.")
         serial_connection = None
     
-    # Initialize spray pumps
-    if SPRAY_PUMP_AVAILABLE:
-        print("[STARTUP] Initializing spray pumps...")
-        print("[STARTUP] CRITICAL: Motors MUST be OFF during initialization")
-        
-        # Initialize with enhanced OFF state handling
-        init_spray_pumps()
-        
-        # Explicitly ensure motors are OFF on startup (multiple checks)
-        # This is critical - motors MUST be OFF when server starts
+    # Initialize GPIO for relay control (motor/pump)
+    if GPIO_AVAILABLE:
         try:
-            print("[STARTUP] Performing final OFF state verification...")
-            
-            # Force OFF state multiple times with delays
-            import time
-            for attempt in range(5):
-                turn_off_pump("A")
-                turn_off_pump("B")
-                time.sleep(0.1)
-            
-            # Additional delay to ensure state is stable
-            time.sleep(0.3)
-            
-            # Reset global state variables
-            global motor_running, current_motor
-            motor_running = False
-            current_motor = None
-            
-            print("✓ Motors explicitly verified OFF on startup (5 attempts)")
-            print("✓ Motor state variables reset: motor_running=False, current_motor=None")
-            print("[STARTUP] If motor is still ON, check:")
-            print("  1. Relay module wiring (IN should connect to GPIO, not 5V)")
-            print("  2. Relay module pull-up resistors (may need external pull-down)")
-            print("  3. Run: python test_gpio_state.py to diagnose GPIO state")
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT)
+            GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)  # Ensure motor is OFF at startup
+            print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Motor OFF")
         except Exception as e:
-            print(f"[STARTUP ERROR] Could not verify motors are OFF: {e}")
-            import traceback
-            traceback.print_exc()
-            print("[STARTUP] WARNING: Motor state verification failed!")
+            print(f"Warning: Could not initialize GPIO: {e}")
+            print("Motor control via GPIO will not be available.")
+    else:
+        print("GPIO not available - Motor control via GPIO disabled")
     
     yield
     
-    # Shutdown - close serial connection and cleanup spray pumps
+    # Shutdown - cleanup
     if serial_connection and serial_connection.is_open:
         serial_connection.close()
         print("Bluetooth serial connection closed")
     
-    # Cleanup spray pumps
-    if SPRAY_PUMP_AVAILABLE:
-        cleanup_spray_pumps()
+    # Cleanup GPIO
+    if GPIO_AVAILABLE:
+        try:
+            GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)  # Turn motor OFF before cleanup
+            GPIO.cleanup()
+            print("GPIO cleaned up - Motor turned OFF")
+        except Exception as e:
+            print(f"Warning: Error during GPIO cleanup: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
@@ -149,10 +139,53 @@ current_frame = None
 # Global variable for serial connection (Bluetooth)
 serial_connection = None
 
-# Global variables for spray pump control
-last_detected_disease = None  # Store last detected disease (only real diseases, not healthy/not a leaf)
-motor_running = False  # Track if motor is currently running
-current_motor = None  # Track which motor(s) are currently running ('A', 'B', or 'AB')
+# GPIO pin for relay control (Pin 12 = GPIO 18)
+RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
+
+
+def activate_motor_for_duration(duration_seconds: float = 3.0):
+    """
+    Activate motor (relay) for specified duration, then turn it off automatically.
+    Runs in a background thread to avoid blocking the API response.
+    
+    Args:
+        duration_seconds: How long to keep motor ON (default: 3.0 seconds)
+    
+    Returns:
+        bool: True if motor was activated, False if GPIO not available
+    """
+    if not GPIO_AVAILABLE:
+        print("Warning: GPIO not available - cannot activate motor")
+        return False
+    
+    def motor_control_thread():
+        """Background thread to control motor timing"""
+        try:
+            # Turn motor ON
+            GPIO.output(RELAY_GPIO_PIN, GPIO.HIGH)
+            print(f"Motor activated (GPIO {RELAY_GPIO_PIN} HIGH) - Disease detected")
+            
+            # Wait for specified duration
+            time.sleep(duration_seconds)
+            
+            # Turn motor OFF
+            GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)
+            print(f"Motor deactivated (GPIO {RELAY_GPIO_PIN} LOW) after {duration_seconds}s")
+        except Exception as e:
+            print(f"Error controlling motor: {e}")
+            import traceback
+            traceback.print_exc()
+            # Ensure motor is turned OFF on error
+            try:
+                GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)
+            except:
+                pass
+    
+    # Start motor control in background thread (non-blocking)
+    motor_thread = threading.Thread(target=motor_control_thread, daemon=True)
+    motor_thread.start()
+    
+    return True
 
 def load_model_and_mapping():
     """Load the disease detection model and class mapping - TensorFlow 2.20.0 compatible"""
@@ -344,29 +377,11 @@ async def detect_disease(file: UploadFile = File(...)):
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
         
-        # Store last detected disease (only if it's a real disease, not healthy/not a leaf)
-        global last_detected_disease, motor_running, current_motor
-        
-        # If new disease detected while motor is running, stop the motor
-        # (User needs to manually start dispenser for new disease)
-        if motor_running and current_motor and not is_healthy and not is_not_a_leaf:
-            if disease_name in DISEASE_MOTOR_MAPPING:
-                new_motor = DISEASE_MOTOR_MAPPING[disease_name]
-                # Always stop current motor when new disease is detected
-                # User must click Start Dispenser again for the new disease
-                if SPRAY_PUMP_AVAILABLE:
-                    turn_off_pump(current_motor)
-                motor_running = False
-                current_motor = None
-                print(f"Motor stopped due to new disease detection: {disease_name}. User must start dispenser again.")
-        
-        # Store disease only if it's a real disease (not healthy/not a leaf)
-        if not is_healthy and not is_not_a_leaf and disease_name in DISEASE_MOTOR_MAPPING:
-            last_detected_disease = disease_name
-            print(f"[DISEASE DETECTED] Stored disease: {disease_name}, Motor mapping: {DISEASE_MOTOR_MAPPING[disease_name]}")
-        else:
-            last_detected_disease = None
-            print(f"[DISEASE DETECTED] No motor action needed for: {disease_name} (healthy or not a leaf)")
+        # Control motor: Turn ON only if disease is detected (not healthy, not Not_A_Leaf)
+        motor_activated = False
+        if not is_healthy and not is_not_a_leaf:
+            # Disease detected - activate motor for 3 seconds
+            motor_activated = activate_motor_for_duration(3.0)
         
         return JSONResponse({
             "success": True,
@@ -375,7 +390,7 @@ async def detect_disease(file: UploadFile = File(...)):
             "is_healthy": is_healthy,
             "is_not_a_leaf": is_not_a_leaf,
             "raw_disease_name": disease_name,
-            "can_spray": not is_healthy and not is_not_a_leaf and disease_name in DISEASE_MOTOR_MAPPING,
+            "motor_activated": motor_activated,
             "model_info": {
                 "input_shape": str(model.input_shape),
                 "num_classes": len(class_mapping)
@@ -455,113 +470,6 @@ async def servo_control(action: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
-
-# Spray pump control endpoints
-@app.post("/api/spray/start")
-async def start_spray():
-    """
-    Start spray pump based on last detected disease.
-    Motor runs continuously until stop is called.
-    """
-    global last_detected_disease, motor_running, current_motor
-    
-    if not SPRAY_PUMP_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Spray pump control not available")
-    
-    # Check if a disease was detected
-    if last_detected_disease is None:
-        raise HTTPException(
-            status_code=400, 
-            detail="No disease detected. Please detect a disease first before starting the dispenser."
-        )
-    
-    # Check if disease is in mapping
-    if last_detected_disease not in DISEASE_MOTOR_MAPPING:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Disease '{last_detected_disease}' does not have a motor mapping."
-        )
-    
-    # Stop any currently running motor
-    if motor_running and current_motor:
-        try:
-            turn_off_pump(current_motor)
-        except Exception as e:
-            print(f"Error stopping previous motor: {e}")
-    
-    # Get motor for this disease
-    motor = DISEASE_MOTOR_MAPPING[last_detected_disease]
-    
-    # Start the motor
-    try:
-        print(f"[SPRAY START] Starting motor {motor} for disease: {last_detected_disease}")
-        success = turn_on_pump(motor)
-        if success:
-            motor_running = True
-            current_motor = motor
-            print(f"[SPRAY START] Motor {motor} started successfully. State: motor_running={motor_running}, current_motor={current_motor}")
-            return {
-                "success": True,
-                "message": f"Spray dispenser started for {last_detected_disease}",
-                "motor": motor,
-                "disease": last_detected_disease
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to start spray pump")
-    except Exception as e:
-        print(f"[SPRAY START ERROR] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error starting spray pump: {str(e)}")
-
-@app.post("/api/spray/stop")
-async def stop_spray():
-    """
-    Stop the currently running spray pump.
-    """
-    global motor_running, current_motor
-    
-    if not SPRAY_PUMP_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Spray pump control not available")
-    
-    if not motor_running or not current_motor:
-        return {
-            "success": True,
-            "message": "No motor is currently running",
-            "motor_was_running": False
-        }
-    
-    try:
-        print(f"[SPRAY STOP] Stopping motor {current_motor}")
-        success = turn_off_pump(current_motor)
-        if success:
-            stopped_motor = current_motor
-            motor_running = False
-            current_motor = None
-            print(f"[SPRAY STOP] Motor {stopped_motor} stopped successfully. State: motor_running={motor_running}, current_motor={current_motor}")
-            return {
-                "success": True,
-                "message": f"Spray dispenser stopped",
-                "motor": stopped_motor
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to stop spray pump")
-    except Exception as e:
-        print(f"[SPRAY STOP ERROR] {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error stopping spray pump: {str(e)}")
-
-@app.get("/api/spray/status")
-async def get_spray_status():
-    """
-    Get current spray pump status.
-    """
-    global last_detected_disease, motor_running, current_motor
-    
-    return {
-        "success": True,
-        "last_detected_disease": last_detected_disease,
-        "motor_running": motor_running,
-        "current_motor": current_motor,
-        "can_start": last_detected_disease is not None and last_detected_disease in DISEASE_MOTOR_MAPPING
-    }
 
 # ============================================
 # Camera Endpoints
