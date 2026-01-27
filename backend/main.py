@@ -80,9 +80,16 @@ async def lifespan(app: FastAPI):
     if GPIO_AVAILABLE:
         try:
             GPIO.setmode(GPIO.BCM)
-            GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT)
-            GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)  # Ensure motor is OFF at startup
+            # Set initial state based on relay polarity
+            initial_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+            GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=initial_state)
+            GPIO.output(RELAY_GPIO_PIN, initial_state)  # Explicitly ensure motor is OFF at startup
+            # Verify the state
+            time.sleep(0.1)  # Small delay to ensure GPIO settles
+            relay_type = "active-low" if RELAY_ACTIVE_LOW else "active-high"
             print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Motor OFF")
+            print(f"Relay type: {relay_type} (Initial state: {'HIGH' if RELAY_ACTIVE_LOW else 'LOW'})")
+            print("Motor will ONLY activate when disease is detected via /api/detect-disease endpoint")
         except Exception as e:
             print(f"Warning: Could not initialize GPIO: {e}")
             print("Motor control via GPIO will not be available.")
@@ -99,7 +106,9 @@ async def lifespan(app: FastAPI):
     # Cleanup GPIO
     if GPIO_AVAILABLE:
         try:
-            GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)  # Turn motor OFF before cleanup
+            # Turn motor OFF before cleanup (use correct polarity)
+            off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+            GPIO.output(RELAY_GPIO_PIN, off_state)
             GPIO.cleanup()
             print("GPIO cleaned up - Motor turned OFF")
         except Exception as e:
@@ -142,11 +151,20 @@ serial_connection = None
 # GPIO pin for relay control (Pin 12 = GPIO 18)
 RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
 
+# Relay polarity configuration
+# Set to True if your relay is active-low (LOW = ON, HIGH = OFF)
+# Set to False if your relay is active-high (HIGH = ON, LOW = OFF) - DEFAULT
+# If motor turns ON automatically at startup, try setting this to True
+RELAY_ACTIVE_LOW = False  # Change to True if motor turns ON when GPIO is LOW
+
 
 def activate_motor_for_duration(duration_seconds: float = 3.0):
     """
     Activate motor (relay) for specified duration, then turn it off automatically.
     Runs in a background thread to avoid blocking the API response.
+    
+    IMPORTANT: This function should ONLY be called from /api/detect-disease endpoint
+    when a disease is detected (not healthy, not Not_A_Leaf).
     
     Args:
         duration_seconds: How long to keep motor ON (default: 3.0 seconds)
@@ -161,23 +179,36 @@ def activate_motor_for_duration(duration_seconds: float = 3.0):
     def motor_control_thread():
         """Background thread to control motor timing"""
         try:
+            # Determine ON and OFF states based on relay polarity
+            on_state = GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
+            off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+            
+            # Verify current state is OFF before turning ON
+            if hasattr(GPIO, 'input'):
+                current_state = GPIO.input(RELAY_GPIO_PIN)
+                print(f"Motor control: Current GPIO state before activation: {current_state}")
+            
             # Turn motor ON
-            GPIO.output(RELAY_GPIO_PIN, GPIO.HIGH)
-            print(f"Motor activated (GPIO {RELAY_GPIO_PIN} HIGH) - Disease detected")
+            GPIO.output(RELAY_GPIO_PIN, on_state)
+            state_name = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
+            print(f"✓ Motor activated (GPIO {RELAY_GPIO_PIN} set to {state_name}) - Disease detected")
             
             # Wait for specified duration
             time.sleep(duration_seconds)
             
             # Turn motor OFF
-            GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)
-            print(f"Motor deactivated (GPIO {RELAY_GPIO_PIN} LOW) after {duration_seconds}s")
+            GPIO.output(RELAY_GPIO_PIN, off_state)
+            state_name = "HIGH" if RELAY_ACTIVE_LOW else "LOW"
+            print(f"✓ Motor deactivated (GPIO {RELAY_GPIO_PIN} set to {state_name}) after {duration_seconds}s")
         except Exception as e:
-            print(f"Error controlling motor: {e}")
+            print(f"ERROR controlling motor: {e}")
             import traceback
             traceback.print_exc()
             # Ensure motor is turned OFF on error
             try:
-                GPIO.output(RELAY_GPIO_PIN, GPIO.LOW)
+                off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+                GPIO.output(RELAY_GPIO_PIN, off_state)
+                print(f"✓ Motor forced OFF due to error")
             except:
                 pass
     
@@ -377,11 +408,23 @@ async def detect_disease(file: UploadFile = File(...)):
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
         
-        # Control motor: Turn ON only if disease is detected (not healthy, not Not_A_Leaf)
+        # Control motor: Turn ON ONLY if disease is detected (not healthy, not Not_A_Leaf)
+        # Motor should NEVER activate for healthy or Not_A_Leaf
         motor_activated = False
         if not is_healthy and not is_not_a_leaf:
             # Disease detected - activate motor for 3 seconds
+            print(f"✓ Disease detected: {disease_name} - Activating motor for 3 seconds")
             motor_activated = activate_motor_for_duration(3.0)
+        else:
+            # Healthy or Not_A_Leaf - motor stays OFF
+            print(f"✓ Detection: {disease_name} - Motor stays OFF (healthy or not a leaf)")
+            # Explicitly ensure motor is OFF (safety check)
+            if GPIO_AVAILABLE:
+                try:
+                    off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+                    GPIO.output(RELAY_GPIO_PIN, off_state)
+                except:
+                    pass
         
         return JSONResponse({
             "success": True,
