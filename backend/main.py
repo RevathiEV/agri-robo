@@ -41,10 +41,11 @@ except ImportError:
 RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
 
 # Relay polarity configuration for SRD-05VDC-SL-C
-# SRD-05VDC-SL-C is ACTIVE-HIGH: HIGH = ON, LOW = OFF (default)
-# Set active_high=False if your relay is active-low (LOW = ON, HIGH = OFF)
-# Set active_high=True if your relay is active-high (HIGH = ON, LOW = OFF) - DEFAULT for SRD-05VDC-SL-C
-RELAY_ACTIVE_HIGH = True  # SRD-05VDC-SL-C is active-HIGH (HIGH = ON, LOW = OFF)
+# SRD-05VDC-SL-C can be configured via jumper as active-HIGH or active-LOW
+# If GPIO shows 0 (OFF) but relay is physically ON, the relay is active-LOW
+# Set active_high=False if your relay is active-low (LOW = ON, HIGH = OFF) - YOUR CASE
+# Set active_high=True if your relay is active-high (HIGH = ON, LOW = OFF)
+RELAY_ACTIVE_HIGH = False  # Changed to False because GPIO=0 but relay is ON (active-LOW relay)
 
 def cleanup_gpio_pin(pin_number):
     """Try to clean up GPIO pin if it's busy from a previous instance"""
@@ -53,7 +54,7 @@ def cleanup_gpio_pin(pin_number):
     try:
         # Try to create and immediately close a device to release the pin
         # This helps if a previous instance didn't clean up properly
-        temp_device = OutputDevice(pin_number, active_high=True, initial_value=False)
+        temp_device = LED(pin_number, active_high=RELAY_ACTIVE_HIGH)
         temp_device.off()  # Ensure it's OFF
         temp_device.close()  # Close to release the pin
         time.sleep(0.2)
@@ -97,19 +98,19 @@ async def lifespan(app: FastAPI):
             time.sleep(0.5)
             
             # IMPORTANT: For SRD-05VDC-SL-C relay module
-            # The relay is active-HIGH by default (HIGH = ON, LOW = OFF)
+            # Your relay is active-LOW (LOW = ON, HIGH = OFF) based on GPIO=0 but relay ON
             # Using LED class - same as your example, but for relay control
-            # LED class defaults to active_high=True (HIGH = ON, LOW = OFF)
-            # We need to ensure the GPIO pin is LOW to keep the relay OFF
+            # For active-LOW relay: LOW signal = relay ON, HIGH signal = relay OFF
+            # We need to ensure the GPIO pin is HIGH to keep the relay OFF
             
-            # Create LED object with active_high=True for SRD-05VDC-SL-C
-            # IMPORTANT: Create it and IMMEDIATELY turn it OFF
+            # Create LED object with active_high=False for active-LOW relay
+            # IMPORTANT: Create it and IMMEDIATELY turn it OFF (send HIGH signal)
             relay_device = LED(RELAY_GPIO_PIN, active_high=RELAY_ACTIVE_HIGH)
             
-            # CRITICAL: Immediately turn OFF the relay (set GPIO to LOW)
-            # For SRD-05VDC-SL-C (active-high): LOW signal = relay OFF, HIGH signal = relay ON
-            # Do this multiple times to ensure it's OFF
-            relay_device.off()  # Send LOW signal to keep relay OFF
+            # CRITICAL: Immediately turn OFF the relay
+            # For active-LOW relay: HIGH signal = relay OFF, LOW signal = relay ON
+            # relay_device.off() sends HIGH when active_high=False, which turns relay OFF
+            relay_device.off()  # Send HIGH signal to keep relay OFF (for active-LOW)
             time.sleep(0.3)  # Delay to ensure GPIO settles
             relay_device.off()  # Second OFF command for safety
             time.sleep(0.2)
@@ -122,9 +123,11 @@ async def lifespan(app: FastAPI):
             try:
                 if hasattr(relay_device, 'value'):
                     current_value = relay_device.value
-                    print(f"GPIO Pin {RELAY_GPIO_PIN} current value: {current_value} (0 = OFF, 1 = ON)")
-                    if current_value != 0:
-                        print(f"WARNING: GPIO is not OFF! Value is {current_value}")
+                    # For active-LOW: value=1 means GPIO=HIGH=relay OFF, value=0 means GPIO=LOW=relay ON
+                    expected_value = 1 if not RELAY_ACTIVE_HIGH else 0  # For active-LOW, we want HIGH (1) to turn OFF
+                    print(f"GPIO Pin {RELAY_GPIO_PIN} current value: {current_value} (for active-LOW: 1=OFF, 0=ON)")
+                    if current_value != expected_value:
+                        print(f"WARNING: GPIO value is {current_value}, expected {expected_value} for relay OFF")
                         relay_device.off()  # Force it OFF again
             except:
                 pass
@@ -236,7 +239,7 @@ def cleanup_gpio_pin(pin_number):
     try:
         # Try to create and immediately close a device to release the pin
         # This helps if a previous instance didn't clean up properly
-        temp_device = OutputDevice(pin_number, active_high=True, initial_value=False)
+        temp_device = LED(pin_number, active_high=RELAY_ACTIVE_HIGH)
         temp_device.off()  # Ensure it's OFF
         temp_device.close()  # Close to release the pin
         time.sleep(0.2)
