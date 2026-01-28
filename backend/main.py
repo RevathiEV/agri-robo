@@ -27,37 +27,20 @@ except ImportError:
     PICAMERA2_AVAILABLE = False
     print("Warning: picamera2 not available. Camera features will be disabled.")
 
-# Try to import RPi.GPIO for motor control
+# Try to import gpiozero for relay control (water pump)
 try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
-except (ImportError, RuntimeError):
-    GPIO_AVAILABLE = False
-    print("Warning: RPi.GPIO not available. Motor control via GPIO will be disabled.")
-    # Create a dummy GPIO class for non-Pi systems
-    class GPIO:
-        BCM = None
-        OUT = None
-        LOW = 0
-        HIGH = 1
-        @staticmethod
-        def setmode(mode):
-            pass
-        @staticmethod
-        def setup(pin, mode):
-            pass
-        @staticmethod
-        def output(pin, state):
-            pass
-        @staticmethod
-        def cleanup():
-            pass
+    from gpiozero import OutputDevice
+    GPIOZERO_AVAILABLE = True
+except ImportError:
+    GPIOZERO_AVAILABLE = False
+    print("Warning: gpiozero not available. Motor control via GPIO will be disabled.")
+    OutputDevice = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
-    global serial_connection
+    global serial_connection, relay_device
     # Startup
     try:
         load_model_and_mapping()
@@ -76,25 +59,26 @@ async def lifespan(app: FastAPI):
         print("Motor and servo control will not be available.")
         serial_connection = None
     
-    # Initialize GPIO for relay control (motor/pump)
-    if GPIO_AVAILABLE:
+    # Initialize GPIO for relay control (motor/pump) using gpiozero
+    if GPIOZERO_AVAILABLE:
         try:
-            GPIO.setmode(GPIO.BCM)
-            # Set initial state based on relay polarity
-            initial_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-            GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=initial_state)
-            GPIO.output(RELAY_GPIO_PIN, initial_state)  # Explicitly ensure motor is OFF at startup
-            # Verify the state
+            # Create OutputDevice for relay - active_high=False means LOW=ON, HIGH=OFF
+            # active_high=True means HIGH=ON, LOW=OFF (default)
+            relay_device = OutputDevice(RELAY_GPIO_PIN, active_high=not RELAY_ACTIVE_LOW, initial_value=False)
+            # Explicitly ensure relay is OFF at startup
+            relay_device.off()
             time.sleep(0.1)  # Small delay to ensure GPIO settles
             relay_type = "active-low" if RELAY_ACTIVE_LOW else "active-high"
-            print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Motor OFF")
-            print(f"Relay type: {relay_type} (Initial state: {'HIGH' if RELAY_ACTIVE_LOW else 'LOW'})")
-            print("Motor will ONLY activate when disease is detected via /api/detect-disease endpoint")
+            print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Water Pump OFF")
+            print(f"Relay type: {relay_type} (Using gpiozero OutputDevice)")
+            print("Water pump will ONLY activate when disease is detected via /api/detect-disease endpoint")
         except Exception as e:
             print(f"Warning: Could not initialize GPIO: {e}")
             print("Motor control via GPIO will not be available.")
+            relay_device = None
     else:
-        print("GPIO not available - Motor control via GPIO disabled")
+        print("gpiozero not available - Motor control via GPIO disabled")
+        relay_device = None
     
     yield
     
@@ -104,13 +88,12 @@ async def lifespan(app: FastAPI):
         print("Bluetooth serial connection closed")
     
     # Cleanup GPIO
-    if GPIO_AVAILABLE:
+    if relay_device is not None:
         try:
-            # Turn motor OFF before cleanup (use correct polarity)
-            off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-            GPIO.output(RELAY_GPIO_PIN, off_state)
-            GPIO.cleanup()
-            print("GPIO cleaned up - Motor turned OFF")
+            # Turn motor OFF before cleanup
+            relay_device.off()
+            relay_device.close()
+            print("GPIO cleaned up - Water pump turned OFF")
         except Exception as e:
             print(f"Warning: Error during GPIO cleanup: {e}")
 
@@ -148,6 +131,9 @@ current_frame = None
 # Global variable for serial connection (Bluetooth)
 serial_connection = None
 
+# Global variable for relay device (water pump)
+relay_device = None
+
 # GPIO pin for relay control (Pin 12 = GPIO 18)
 RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
 
@@ -172,43 +158,33 @@ def activate_motor_for_duration(duration_seconds: float = 3.0):
     Returns:
         bool: True if motor was activated, False if GPIO not available
     """
-    if not GPIO_AVAILABLE:
-        print("Warning: GPIO not available - cannot activate motor")
+    global relay_device
+    
+    if relay_device is None:
+        print("Warning: Relay device not available - cannot activate motor")
         return False
     
     def motor_control_thread():
         """Background thread to control motor timing"""
         try:
-            # Determine ON and OFF states based on relay polarity
-            on_state = GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
-            off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-            
-            # Verify current state is OFF before turning ON
-            if hasattr(GPIO, 'input'):
-                current_state = GPIO.input(RELAY_GPIO_PIN)
-                print(f"Motor control: Current GPIO state before activation: {current_state}")
-            
             # Turn motor ON
-            GPIO.output(RELAY_GPIO_PIN, on_state)
-            state_name = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
-            print(f"✓ Motor activated (GPIO {RELAY_GPIO_PIN} set to {state_name}) - Disease detected")
+            relay_device.on()
+            print(f"✓ Water pump activated (GPIO {RELAY_GPIO_PIN}) - Disease detected")
             
             # Wait for specified duration
             time.sleep(duration_seconds)
             
             # Turn motor OFF
-            GPIO.output(RELAY_GPIO_PIN, off_state)
-            state_name = "HIGH" if RELAY_ACTIVE_LOW else "LOW"
-            print(f"✓ Motor deactivated (GPIO {RELAY_GPIO_PIN} set to {state_name}) after {duration_seconds}s")
+            relay_device.off()
+            print(f"✓ Water pump deactivated (GPIO {RELAY_GPIO_PIN}) after {duration_seconds}s")
         except Exception as e:
             print(f"ERROR controlling motor: {e}")
             import traceback
             traceback.print_exc()
             # Ensure motor is turned OFF on error
             try:
-                off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-                GPIO.output(RELAY_GPIO_PIN, off_state)
-                print(f"✓ Motor forced OFF due to error")
+                relay_device.off()
+                print(f"✓ Water pump forced OFF due to error")
             except:
                 pass
     
@@ -419,10 +395,9 @@ async def detect_disease(file: UploadFile = File(...)):
             # Healthy or Not_A_Leaf - motor stays OFF
             print(f"✓ Detection: {disease_name} - Motor stays OFF (healthy or not a leaf)")
             # Explicitly ensure motor is OFF (safety check)
-            if GPIO_AVAILABLE:
+            if relay_device is not None:
                 try:
-                    off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-                    GPIO.output(RELAY_GPIO_PIN, off_state)
+                    relay_device.off()
                 except:
                     pass
         

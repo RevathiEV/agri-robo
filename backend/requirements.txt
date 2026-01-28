@@ -44,7 +44,7 @@ pyserial>=3.5
 # ============================================
 # GPIO Control (Raspberry Pi)
 # ============================================
-# Note: RPi.GPIO is usually installed via apt on Raspberry Pi:
-# sudo apt-get install python3-rpi.gpio
-# But can also be installed via pip:
-RPi.GPIO>=0.7.1
+# gpiozero is the recommended library for GPIO control on Raspberry Pi
+# It's usually pre-installed on Raspberry Pi OS, but can be installed via pip:
+# pip install gpiozero
+gpiozero>=1.6.2
