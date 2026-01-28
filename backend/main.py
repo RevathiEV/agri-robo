@@ -28,22 +28,23 @@ except ImportError:
     print("Warning: picamera2 not available. Camera features will be disabled.")
 
 # Try to import gpiozero for relay control (water pump)
+# Using LED class (same as your example) - simpler and works perfectly for relays
 try:
-    from gpiozero import OutputDevice
+    from gpiozero import LED
     GPIOZERO_AVAILABLE = True
 except ImportError:
     GPIOZERO_AVAILABLE = False
     print("Warning: gpiozero not available. Motor control via GPIO will be disabled.")
-    OutputDevice = None
+    LED = None
 
 # GPIO pin for relay control (Pin 12 = GPIO 18)
 RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
 
-# Relay polarity configuration
-# Set to True if your relay is active-low (LOW = ON, HIGH = OFF)
-# Set to False if your relay is active-high (HIGH = ON, LOW = OFF) - DEFAULT
-# IMPORTANT: If motor/relay turns ON automatically at startup, change this to True
-RELAY_ACTIVE_LOW = True  # Changed to True because relay green light turns ON at startup
+# Relay polarity configuration for SRD-05VDC-SL-C
+# SRD-05VDC-SL-C is ACTIVE-HIGH: HIGH = ON, LOW = OFF (default)
+# Set active_high=False if your relay is active-low (LOW = ON, HIGH = OFF)
+# Set active_high=True if your relay is active-high (HIGH = ON, LOW = OFF) - DEFAULT for SRD-05VDC-SL-C
+RELAY_ACTIVE_HIGH = True  # SRD-05VDC-SL-C is active-HIGH (HIGH = ON, LOW = OFF)
 
 def cleanup_gpio_pin(pin_number):
     """Try to clean up GPIO pin if it's busy from a previous instance"""
@@ -83,7 +84,8 @@ async def lifespan(app: FastAPI):
         print("Motor and servo control will not be available.")
         serial_connection = None
     
-    # Initialize GPIO for relay control (motor/pump) using gpiozero
+    # Initialize GPIO for relay control (motor/pump) using gpiozero LED class
+    # Using LED class (same as your example) - simpler approach for SRD-05VDC-SL-C relay
     if GPIOZERO_AVAILABLE:
         try:
             # First, try to clean up GPIO pin if it's busy from a previous instance
@@ -94,27 +96,42 @@ async def lifespan(app: FastAPI):
             # Wait a bit for GPIO to be released
             time.sleep(0.5)
             
-            # Create OutputDevice for relay
-            # active_high=False means LOW=ON, HIGH=OFF (for active-low relays)
-            # active_high=True means HIGH=ON, LOW=OFF (for active-high relays)
-            # IMPORTANT: initial_value=False ensures relay starts OFF
-            # If RELAY_ACTIVE_LOW=True, then active_high=False (LOW turns relay ON)
-            # If RELAY_ACTIVE_LOW=False, then active_high=True (HIGH turns relay ON)
-            relay_device = OutputDevice(RELAY_GPIO_PIN, active_high=not RELAY_ACTIVE_LOW, initial_value=False)
+            # IMPORTANT: For SRD-05VDC-SL-C relay module
+            # The relay is active-HIGH by default (HIGH = ON, LOW = OFF)
+            # Using LED class - same as your example, but for relay control
+            # LED class defaults to active_high=True (HIGH = ON, LOW = OFF)
+            # We need to ensure the GPIO pin is LOW to keep the relay OFF
             
-            # Explicitly ensure relay is OFF at startup (multiple safety checks)
-            # For active-low: we need HIGH to turn it OFF
-            # For active-high: we need LOW to turn it OFF
-            relay_device.off()
+            # Create LED object with active_high=True for SRD-05VDC-SL-C
+            # IMPORTANT: Create it and IMMEDIATELY turn it OFF
+            relay_device = LED(RELAY_GPIO_PIN, active_high=RELAY_ACTIVE_HIGH)
+            
+            # CRITICAL: Immediately turn OFF the relay (set GPIO to LOW)
+            # For SRD-05VDC-SL-C (active-high): LOW signal = relay OFF, HIGH signal = relay ON
+            # Do this multiple times to ensure it's OFF
+            relay_device.off()  # Send LOW signal to keep relay OFF
             time.sleep(0.3)  # Delay to ensure GPIO settles
             relay_device.off()  # Second OFF command for safety
             time.sleep(0.2)
-            relay_device.off()  # Third OFF command for extra safety
+            relay_device.off()  # Third OFF command - be absolutely sure
+            time.sleep(0.1)
+            relay_device.off()  # Fourth OFF - maximum safety
             time.sleep(0.1)
             
-            relay_type = "active-low" if RELAY_ACTIVE_LOW else "active-high"
+            # Verify the state
+            try:
+                if hasattr(relay_device, 'value'):
+                    current_value = relay_device.value
+                    print(f"GPIO Pin {RELAY_GPIO_PIN} current value: {current_value} (0 = OFF, 1 = ON)")
+                    if current_value != 0:
+                        print(f"WARNING: GPIO is not OFF! Value is {current_value}")
+                        relay_device.off()  # Force it OFF again
+            except:
+                pass
+            
+            relay_type = "active-high" if RELAY_ACTIVE_HIGH else "active-low"
             print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Water Pump OFF")
-            print(f"Relay type: {relay_type} (Using gpiozero OutputDevice)")
+            print(f"Relay type: {relay_type} (SRD-05VDC-SL-C - Using gpiozero LED class)")
             print("Water pump will ONLY activate when disease is detected via /api/detect-disease endpoint")
             print("✓ Motor is OFF and will remain OFF until disease is detected")
         except Exception as e:
@@ -228,11 +245,7 @@ def cleanup_gpio_pin(pin_number):
         # If we can't clean up, that's okay - we'll try to initialize anyway
         return False
 
-# Relay polarity configuration
-# Set to True if your relay is active-low (LOW = ON, HIGH = OFF)
-# Set to False if your relay is active-high (HIGH = ON, LOW = OFF) - DEFAULT
-# IMPORTANT: If motor/relay turns ON automatically at startup, change this to True
-RELAY_ACTIVE_LOW = True  # Changed to True because relay green light turns ON at startup
+# Note: RELAY_ACTIVE_HIGH is defined earlier in the file (line ~47)
 
 
 def activate_motor_for_duration(duration_seconds: float = 3.0):
