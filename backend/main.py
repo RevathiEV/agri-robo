@@ -36,6 +36,30 @@ except ImportError:
     print("Warning: gpiozero not available. Motor control via GPIO will be disabled.")
     OutputDevice = None
 
+# GPIO pin for relay control (Pin 12 = GPIO 18)
+RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
+
+# Relay polarity configuration
+# Set to True if your relay is active-low (LOW = ON, HIGH = OFF)
+# Set to False if your relay is active-high (HIGH = ON, LOW = OFF) - DEFAULT
+# IMPORTANT: If motor/relay turns ON automatically at startup, change this to True
+RELAY_ACTIVE_LOW = True  # Changed to True because relay green light turns ON at startup
+
+def cleanup_gpio_pin(pin_number):
+    """Try to clean up GPIO pin if it's busy from a previous instance"""
+    if not GPIOZERO_AVAILABLE:
+        return False
+    try:
+        # Try to create and immediately close a device to release the pin
+        # This helps if a previous instance didn't clean up properly
+        temp_device = OutputDevice(pin_number, active_high=True, initial_value=False)
+        temp_device.off()  # Ensure it's OFF
+        temp_device.close()  # Close to release the pin
+        time.sleep(0.2)
+        return True
+    except Exception as e:
+        # If we can't clean up, that's okay - we'll try to initialize anyway
+        return False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -62,6 +86,14 @@ async def lifespan(app: FastAPI):
     # Initialize GPIO for relay control (motor/pump) using gpiozero
     if GPIOZERO_AVAILABLE:
         try:
+            # First, try to clean up GPIO pin if it's busy from a previous instance
+            print(f"Attempting to initialize GPIO Pin {RELAY_GPIO_PIN}...")
+            if not cleanup_gpio_pin(RELAY_GPIO_PIN):
+                print(f"Note: Could not clean up GPIO Pin {RELAY_GPIO_PIN}, will try to initialize anyway...")
+            
+            # Wait a bit for GPIO to be released
+            time.sleep(0.5)
+            
             # Create OutputDevice for relay
             # active_high=False means LOW=ON, HIGH=OFF (for active-low relays)
             # active_high=True means HIGH=ON, LOW=OFF (for active-high relays)
@@ -86,7 +118,16 @@ async def lifespan(app: FastAPI):
             print("Water pump will ONLY activate when disease is detected via /api/detect-disease endpoint")
             print("✓ Motor is OFF and will remain OFF until disease is detected")
         except Exception as e:
-            print(f"Warning: Could not initialize GPIO: {e}")
+            error_msg = str(e)
+            if "GPIO busy" in error_msg or "busy" in error_msg.lower():
+                print(f"ERROR: GPIO Pin {RELAY_GPIO_PIN} is busy (likely from a previous instance)")
+                print("SOLUTION: Please run the following commands to clean up:")
+                print(f"  1. Find the process: sudo lsof | grep gpio")
+                print(f"  2. Kill any Python processes using GPIO: pkill -f 'python.*main.py'")
+                print(f"  3. Wait 2-3 seconds, then restart the application")
+                print(f"  4. If still busy, try: sudo systemctl restart pigpio (if using pigpio)")
+            else:
+                print(f"Warning: Could not initialize GPIO: {e}")
             print("Motor control via GPIO will not be available.")
             relay_device = None
     else:
@@ -170,6 +211,22 @@ relay_device = None
 
 # GPIO pin for relay control (Pin 12 = GPIO 18)
 RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
+
+def cleanup_gpio_pin(pin_number):
+    """Try to clean up GPIO pin if it's busy from a previous instance"""
+    if not GPIOZERO_AVAILABLE:
+        return False
+    try:
+        # Try to create and immediately close a device to release the pin
+        # This helps if a previous instance didn't clean up properly
+        temp_device = OutputDevice(pin_number, active_high=True, initial_value=False)
+        temp_device.off()  # Ensure it's OFF
+        temp_device.close()  # Close to release the pin
+        time.sleep(0.2)
+        return True
+    except Exception as e:
+        # If we can't clean up, that's okay - we'll try to initialize anyway
+        return False
 
 # Relay polarity configuration
 # Set to True if your relay is active-low (LOW = ON, HIGH = OFF)
