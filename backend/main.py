@@ -62,15 +62,24 @@ async def lifespan(app: FastAPI):
     # Initialize GPIO for relay control (motor/pump) using gpiozero
     if GPIOZERO_AVAILABLE:
         try:
-            # Create OutputDevice for relay - active_high=False means LOW=ON, HIGH=OFF
-            # active_high=True means HIGH=ON, LOW=OFF (default)
+            # Create OutputDevice for relay
+            # active_high=False means LOW=ON, HIGH=OFF (for active-low relays)
+            # active_high=True means HIGH=ON, LOW=OFF (for active-high relays)
             # IMPORTANT: initial_value=False ensures relay starts OFF
+            # If RELAY_ACTIVE_LOW=True, then active_high=False (LOW turns relay ON)
+            # If RELAY_ACTIVE_LOW=False, then active_high=True (HIGH turns relay ON)
             relay_device = OutputDevice(RELAY_GPIO_PIN, active_high=not RELAY_ACTIVE_LOW, initial_value=False)
+            
             # Explicitly ensure relay is OFF at startup (multiple safety checks)
+            # For active-low: we need HIGH to turn it OFF
+            # For active-high: we need LOW to turn it OFF
             relay_device.off()
-            time.sleep(0.2)  # Delay to ensure GPIO settles
+            time.sleep(0.3)  # Delay to ensure GPIO settles
             relay_device.off()  # Second OFF command for safety
+            time.sleep(0.2)
+            relay_device.off()  # Third OFF command for extra safety
             time.sleep(0.1)
+            
             relay_type = "active-low" if RELAY_ACTIVE_LOW else "active-high"
             print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Water Pump OFF")
             print(f"Relay type: {relay_type} (Using gpiozero OutputDevice)")
@@ -94,6 +103,17 @@ async def lifespan(app: FastAPI):
     
     yield
     
+    # Additional safety check - ensure motor is OFF when app starts serving requests
+    # This runs right after the app starts serving (after yield)
+    if relay_device is not None:
+        try:
+            relay_device.off()
+            time.sleep(0.1)
+            relay_device.off()  # Double check
+            print("✓ App serving: Water pump confirmed OFF")
+        except:
+            pass
+    
     # Shutdown - cleanup
     if serial_connection and serial_connection.is_open:
         serial_connection.close()
@@ -112,19 +132,6 @@ async def lifespan(app: FastAPI):
             print(f"Warning: Error during GPIO cleanup: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
-
-@app.on_event("startup")
-async def startup_event():
-    """Ensure motor is OFF when application starts serving requests"""
-    global relay_device
-    if relay_device is not None:
-        try:
-            relay_device.off()
-            time.sleep(0.1)
-            relay_device.off()  # Double check
-            print("✓ Startup event: Water pump confirmed OFF")
-        except Exception as e:
-            print(f"Warning: Could not ensure motor OFF at startup: {e}")
 
 # CORS middleware to allow React frontend to access the API
 # Updated to include Pi's IP address
@@ -167,8 +174,8 @@ RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
 # Relay polarity configuration
 # Set to True if your relay is active-low (LOW = ON, HIGH = OFF)
 # Set to False if your relay is active-high (HIGH = ON, LOW = OFF) - DEFAULT
-# If motor turns ON automatically at startup, try setting this to True
-RELAY_ACTIVE_LOW = False  # Change to True if motor turns ON when GPIO is LOW
+# IMPORTANT: If motor/relay turns ON automatically at startup, change this to True
+RELAY_ACTIVE_LOW = True  # Changed to True because relay green light turns ON at startup
 
 
 def activate_motor_for_duration(duration_seconds: float = 3.0):
