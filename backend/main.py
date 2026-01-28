@@ -64,14 +64,18 @@ async def lifespan(app: FastAPI):
         try:
             # Create OutputDevice for relay - active_high=False means LOW=ON, HIGH=OFF
             # active_high=True means HIGH=ON, LOW=OFF (default)
+            # IMPORTANT: initial_value=False ensures relay starts OFF
             relay_device = OutputDevice(RELAY_GPIO_PIN, active_high=not RELAY_ACTIVE_LOW, initial_value=False)
-            # Explicitly ensure relay is OFF at startup
+            # Explicitly ensure relay is OFF at startup (multiple safety checks)
             relay_device.off()
-            time.sleep(0.1)  # Small delay to ensure GPIO settles
+            time.sleep(0.2)  # Delay to ensure GPIO settles
+            relay_device.off()  # Second OFF command for safety
+            time.sleep(0.1)
             relay_type = "active-low" if RELAY_ACTIVE_LOW else "active-high"
             print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Water Pump OFF")
             print(f"Relay type: {relay_type} (Using gpiozero OutputDevice)")
             print("Water pump will ONLY activate when disease is detected via /api/detect-disease endpoint")
+            print("✓ Motor is OFF and will remain OFF until disease is detected")
         except Exception as e:
             print(f"Warning: Could not initialize GPIO: {e}")
             print("Motor control via GPIO will not be available.")
@@ -80,6 +84,14 @@ async def lifespan(app: FastAPI):
         print("gpiozero not available - Motor control via GPIO disabled")
         relay_device = None
     
+    # Final safety check - ensure motor is OFF after all initialization
+    if relay_device is not None:
+        try:
+            relay_device.off()
+            print("✓ Final safety check: Motor confirmed OFF")
+        except:
+            pass
+    
     yield
     
     # Shutdown - cleanup
@@ -87,17 +99,32 @@ async def lifespan(app: FastAPI):
         serial_connection.close()
         print("Bluetooth serial connection closed")
     
-    # Cleanup GPIO
+    # Cleanup GPIO - ensure motor is OFF before shutdown
     if relay_device is not None:
         try:
-            # Turn motor OFF before cleanup
+            # Turn motor OFF before cleanup (multiple safety checks)
             relay_device.off()
+            time.sleep(0.1)
+            relay_device.off()  # Second OFF for safety
             relay_device.close()
             print("GPIO cleaned up - Water pump turned OFF")
         except Exception as e:
             print(f"Warning: Error during GPIO cleanup: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
+
+@app.on_event("startup")
+async def startup_event():
+    """Ensure motor is OFF when application starts serving requests"""
+    global relay_device
+    if relay_device is not None:
+        try:
+            relay_device.off()
+            time.sleep(0.1)
+            relay_device.off()  # Double check
+            print("✓ Startup event: Water pump confirmed OFF")
+        except Exception as e:
+            print(f"Warning: Could not ensure motor OFF at startup: {e}")
 
 # CORS middleware to allow React frontend to access the API
 # Updated to include Pi's IP address
@@ -386,14 +413,16 @@ async def detect_disease(file: UploadFile = File(...)):
         
         # Control motor: Turn ON ONLY if disease is detected (not healthy, not Not_A_Leaf)
         # Motor should NEVER activate for healthy or Not_A_Leaf
+        # IMPORTANT: Motor only activates when frontend shows "disease detected"
         motor_activated = False
         if not is_healthy and not is_not_a_leaf:
             # Disease detected - activate motor for 3 seconds
-            print(f"✓ Disease detected: {disease_name} - Activating motor for 3 seconds")
+            # This is the ONLY place where motor should turn ON
+            print(f"✓ Disease detected: {disease_name} - Activating water pump for 3 seconds")
             motor_activated = activate_motor_for_duration(3.0)
         else:
             # Healthy or Not_A_Leaf - motor stays OFF
-            print(f"✓ Detection: {disease_name} - Motor stays OFF (healthy or not a leaf)")
+            print(f"✓ Detection: {disease_name} - Water pump stays OFF (healthy or not a leaf)")
             # Explicitly ensure motor is OFF (safety check)
             if relay_device is not None:
                 try:
