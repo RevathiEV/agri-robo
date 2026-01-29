@@ -1,4 +1,10 @@
-# ============================================
+fastapi
+uvicorn
+numpy
+pillow
+pyserial
+tensorflow-macos
+tensorflow-metal
 # Requirements for Agri ROBO Tomato
 # ============================================
 # Install in virtual environment (NOT globally)
