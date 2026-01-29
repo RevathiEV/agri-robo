@@ -686,6 +686,16 @@ async def start_camera():
     try:
         with camera_lock:
             if camera is None:
+                # Check if any camera is detected before opening (avoids IndexError when no camera)
+                try:
+                    cam_info = Picamera2.global_camera_info()
+                except Exception:
+                    cam_info = []
+                if not cam_info or len(cam_info) == 0:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="No camera detected. Connect a Pi camera or USB camera and try again."
+                    )
                 camera = Picamera2(camera_num=0)
                 
                 # Configure camera
@@ -723,6 +733,13 @@ async def start_camera():
         
         return {"success": True, "message": "Camera started"}
     
+    except HTTPException:
+        raise
+    except IndexError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="No camera detected. Connect a Pi camera or USB camera and try again."
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()
