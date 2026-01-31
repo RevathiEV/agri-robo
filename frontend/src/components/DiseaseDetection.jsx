@@ -118,14 +118,17 @@ function DiseaseDetection() {
   // Handle stream URL updates when camera becomes active
   useEffect(() => {
     if (cameraActive && videoRef.current) {
-      // Wait a moment for camera to be ready
+      // Wait a moment for camera to be ready on Pi (longer delay for hardware startup)
       const timer = setTimeout(() => {
         if (videoRef.current && cameraActive) {
-          const streamUrl = '/api/camera/stream?t=' + Date.now()
+          const streamUrl = '/api/camera/stream'
           console.log('Setting stream URL:', streamUrl)
           videoRef.current.src = streamUrl
+          videoRef.current.play().catch(e => {
+            console.warn('Video play warning:', e)
+          })
         }
-      }, 800) // Wait 800ms for camera to start capturing frames
+      }, 1200) // 1.2s delay for Pi camera to warm up
       
       return () => clearTimeout(timer)
     } else if (!cameraActive && videoRef.current) {
@@ -261,28 +264,37 @@ function DiseaseDetection() {
           {/* Live Camera Stream or Preview */}
           {cameraActive ? (
             <div className="border-2 border-blue-400 rounded-lg overflow-hidden bg-black min-h-[300px] flex items-center justify-center relative">
-              <img
+              <video
                 ref={videoRef}
-                alt="Live Camera Stream"
-                className="w-full h-auto max-h-[400px] object-contain"
-                style={{ display: 'block' }}
-                crossOrigin="anonymous"
-                onError={(e) => {
-                  console.error('Error loading camera stream:', e)
-                  setError('Failed to load camera stream. Please try again.')
+                autoPlay
+                playsInline
+                muted
+                style={{
+                  width: '100%',
+                  height: 'auto',
+                  maxHeight: '400px',
+                  objectFit: 'contain',
+                  display: 'block'
                 }}
-                onLoad={() => {
-                  console.log('Camera stream image loaded')
+                onError={(e) => {
+                  console.error('Error with camera stream:', e)
+                  setError('Failed to load camera stream. Ensure camera is connected and try again.')
+                }}
+                onPlay={() => {
+                  console.log('Camera stream playing')
+                }}
+                onLoadedMetadata={() => {
+                  console.log('Camera stream metadata loaded')
                 }}
               />
-              {!videoRef.current?.complete && (
-                <div className="absolute inset-0 flex items-center justify-center text-white">
+              {!videoRef.current?.paused && !videoRef.current?.currentTime ? (
+                <div className="absolute inset-0 flex items-center justify-center text-white bg-black bg-opacity-50">
                   <div className="text-center">
                     <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent mx-auto mb-2"></div>
                     <p>Loading camera stream...</p>
                   </div>
                 </div>
-              )}
+              ) : null}
             </div>
           ) : preview ? (
             <div className="space-y-3">

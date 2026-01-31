@@ -603,38 +603,58 @@ async def servo_control(action: str):
 # ============================================
 
 def convert_frame_to_rgb(frame):
-    """Convert camera frame to RGB format"""
-    if len(frame.shape) == 3 and frame.shape[2] == 4:
-        rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
-        rgb_frame[:, :, 0] = frame[:, :, 2]  # R
-        rgb_frame[:, :, 1] = frame[:, :, 1]  # G
-        rgb_frame[:, :, 2] = frame[:, :, 0]  # B
-        return rgb_frame
-    elif len(frame.shape) == 3 and frame.shape[2] == 3:
-        return frame
-    else:
+    """Convert camera frame to RGB format - robust for Pi camera formats"""
+    try:
+        if frame is None or not hasattr(frame, 'shape'):
+            return None
+        
+        # Handle different frame shapes
+        if len(frame.shape) == 3:
+            if frame.shape[2] == 4:  # RGBA or BGRA
+                # Assume BGRA format from camera
+                rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
+                rgb_frame[:, :, 0] = frame[:, :, 2]  # R
+                rgb_frame[:, :, 1] = frame[:, :, 1]  # G
+                rgb_frame[:, :, 2] = frame[:, :, 0]  # B
+                return rgb_frame
+            elif frame.shape[2] == 3:  # RGB or BGR
+                # Assume BGR from camera, convert to RGB
+                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if 'cv2' in dir() else frame[:, :, ::-1]
+            else:
+                return frame
+        elif len(frame.shape) == 2:  # Grayscale
+            return np.stack([frame, frame, frame], axis=2)
+        else:
+            return frame
+    except Exception as e:
+        print(f"Error converting frame: {e}")
         return frame
 
 def process_frame(frame):
     """Apply minimal post-processing for natural look"""
-    rgb_frame = convert_frame_to_rgb(frame)
-    mean_brightness = rgb_frame.mean()
-    
-    image = Image.fromarray(rgb_frame, 'RGB')
-    
-    # Minimal brightness correction only if very dark
-    if mean_brightness < 30:
-        enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(1.3)
-    
-    # Very minimal color correction
-    r, g, b = image.split()
-    b = ImageEnhance.Brightness(b).enhance(0.98)
-    r = ImageEnhance.Brightness(r).enhance(1.01)
-    g = ImageEnhance.Brightness(g).enhance(1.00)
-    image = Image.merge('RGB', (r, g, b))
-    
-    return np.array(image)
+    try:
+        rgb_frame = convert_frame_to_rgb(frame)
+        if rgb_frame is None:
+            return None
+        
+        # Ensure uint8
+        if rgb_frame.dtype != np.uint8:
+            rgb_frame = np.uint8(np.clip(rgb_frame, 0, 255))
+        
+        image = Image.fromarray(rgb_frame, 'RGB')
+        
+        # Calculate brightness
+        mean_brightness = np.mean(rgb_frame)
+        
+        # Minimal brightness correction only if very dark
+        if mean_brightness < 30:
+            enhancer = ImageEnhance.Brightness(image)
+            image = enhancer.enhance(1.3)
+        
+        return np.array(image)
+    except Exception as e:
+        print(f"Error processing frame: {e}")
+        return frame
 
 def camera_capture_thread():
     """Background thread that continuously captures frames when streaming"""
@@ -645,28 +665,48 @@ def camera_capture_thread():
             try:
                 with camera_lock:
                     if camera is not None and camera_streaming:
-                        request = camera.capture_request()
-                        frame = request.make_array("main")
-                        request.release()
-                        
-                        # Process frame
-                        rgb_frame = process_frame(frame)
-                        
-                        # Convert to JPEG
-                        image = Image.fromarray(rgb_frame, 'RGB')
-                        img_bytes = io.BytesIO()
-                        image.save(img_bytes, format='JPEG', quality=85)
-                        img_bytes.seek(0)
-                        
-                        # Update frame (no lock needed for simple assignment)
-                        frame_data = img_bytes.getvalue()
-                        current_frame = frame_data
+                        try:
+                            request = camera.capture_request()
+                            frame = request.make_array("main")
+                            request.release()
+                            
+                            if frame is None:
+                                print("Warning: camera.capture_request() returned None frame")
+                                time.sleep(0.05)
+                                continue
+                            
+                            # Process frame
+                            rgb_frame = process_frame(frame)
+                            
+                            if rgb_frame is None:
+                                print("Warning: process_frame returned None")
+                                time.sleep(0.05)
+                                continue
+                            
+                            # Convert to JPEG
+                            image = Image.fromarray(rgb_frame, 'RGB')
+                            img_bytes = io.BytesIO()
+                            image.save(img_bytes, format='JPEG', quality=85)
+                            img_bytes.seek(0)
+                            
+                            # Update frame
+                            frame_data = img_bytes.getvalue()
+                            if len(frame_data) > 0:
+                                current_frame = frame_data
+                            
+                        except Exception as inner_e:
+                            print(f"Error in frame capture: {type(inner_e).__name__}: {inner_e}")
+                            import traceback
+                            traceback.print_exc()
+                            time.sleep(0.1)
+                            continue
+                
                 time.sleep(0.033)  # ~30 FPS
             except Exception as e:
-                print(f"Camera capture error: {e}")
+                print(f"Camera capture thread error: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(0.1)
+                time.sleep(0.5)
         else:
             time.sleep(0.1)
 
@@ -777,26 +817,30 @@ async def camera_stream():
     
     def generate_frames():
         frame_count = 0
+        max_wait_iterations = 200  # ~2 seconds at 0.01s per iteration
+        
         while camera_streaming:
             # Wait for frame to be available (with timeout)
             wait_count = 0
-            while current_frame is None and camera_streaming and wait_count < 100:
+            while current_frame is None and camera_streaming and wait_count < max_wait_iterations:
                 time.sleep(0.01)
                 wait_count += 1
             
-            if current_frame:
+            if current_frame and camera_streaming:
                 try:
+                    # Proper MJPEG format
                     yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + current_frame + b'\r\n')
+                           b'Content-Type: image/jpeg\r\n'
+                           b'Content-length: ' + str(len(current_frame)).encode() + b'\r\n\r\n' + current_frame + b'\r\n')
                     frame_count += 1
                 except Exception as e:
                     print(f"Error yielding frame: {e}")
                     break
             else:
-                # If no frame available, wait a bit longer
+                # If no frame available after timeout, wait a bit longer
                 time.sleep(0.1)
             
-            time.sleep(0.033)  # ~30 FPS
+            time.sleep(0.01)  # Small delay between yields
     
     return StreamingResponse(
         generate_frames(),
@@ -805,7 +849,7 @@ async def camera_stream():
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0",
-            "X-Accel-Buffering": "no"  # Disable buffering for nginx if used
+            "X-Accel-Buffering": "no"
         }
     )
 
