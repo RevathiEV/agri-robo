@@ -232,6 +232,13 @@ async def start_camera():
         camera_streaming=True
     return {"started":True}
 
+@app.post("/api/camera/capture")
+async def capture():
+    global current_frame
+    if not current_frame:
+        raise HTTPException(503,"Camera not ready. Start camera first.")
+    return Response(content=current_frame,media_type="image/jpeg")
+
 @app.get("/api/camera/stream")
 async def stream():
     def gen():
