@@ -31,7 +31,7 @@ function DiseaseDetection() {
     try {
       setError(null)
       const response = await axios.post('/api/camera/start')
-      if (response.data.success) {
+      if (response.data.started) {
         setCameraActive(true)
         setPreview(null)
         setSelectedImage(null)
