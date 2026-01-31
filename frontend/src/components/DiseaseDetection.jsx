@@ -12,6 +12,7 @@ function DiseaseDetection() {
   const [sprayRunning, setSprayRunning] = useState(false)
   const [sprayLoading, setSprayLoading] = useState(false)
   const videoRef = useRef(null)
+  const streamIntervalRef = useRef(null)
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0]
@@ -31,7 +32,7 @@ function DiseaseDetection() {
     try {
       setError(null)
       const response = await axios.post('/api/camera/start')
-      if (response.data.success) {
+      if (response.data.started) {
         setCameraActive(true)
         setPreview(null)
         setSelectedImage(null)
@@ -118,20 +119,50 @@ function DiseaseDetection() {
   // Handle stream URL updates when camera becomes active
   useEffect(() => {
     if (cameraActive && videoRef.current) {
-      // Wait a moment for camera to be ready
-      const timer = setTimeout(() => {
-        if (videoRef.current && cameraActive) {
-          const streamUrl = '/api/camera/stream?t=' + Date.now()
-          console.log('Setting stream URL:', streamUrl)
-          videoRef.current.src = streamUrl
-        }
-      }, 800) // Wait 800ms for camera to start capturing frames
-      
-      return () => clearTimeout(timer)
+      console.log('Starting camera frame polling')
+      startFramePolling()
     } else if (!cameraActive && videoRef.current) {
       videoRef.current.src = ''
+      if (streamIntervalRef.current) {
+        clearInterval(streamIntervalRef.current)
+        streamIntervalRef.current = null
+      }
     }
   }, [cameraActive])
+
+  const startFramePolling = () => {
+    if (streamIntervalRef.current) {
+      clearInterval(streamIntervalRef.current)
+    }
+    
+    // Poll frames every 100ms (~10 FPS)
+    streamIntervalRef.current = setInterval(async () => {
+      if (!cameraActive || !videoRef.current) {
+        clearInterval(streamIntervalRef.current)
+        streamIntervalRef.current = null
+        return
+      }
+      
+      try {
+        const response = await axios.get('/api/camera/frame', {
+          responseType: 'blob'
+        })
+        if (response.data && response.data.size > 0) {
+          // Revoke old URL to free memory
+          if (videoRef.current.src && videoRef.current.src.startsWith('blob:')) {
+            URL.revokeObjectURL(videoRef.current.src)
+          }
+          
+          // Create new blob URL and set it
+          const url = URL.createObjectURL(response.data)
+          videoRef.current.src = url
+          console.log('Frame updated:', response.data.size, 'bytes')
+        }
+      } catch (err) {
+        console.error('Frame poll error:', err.message)
+      }
+    }, 100)
+  }
 
   // Cleanup on unmount
   useEffect(() => {
@@ -268,21 +299,16 @@ function DiseaseDetection() {
                 style={{ display: 'block' }}
                 crossOrigin="anonymous"
                 onError={(e) => {
-                  console.error('Error loading camera stream:', e)
-                  setError('Failed to load camera stream. Please try again.')
+                  console.error('Stream error:', e)
+                  setError('Failed to load camera stream. Check if camera is started.')
                 }}
                 onLoad={() => {
-                  console.log('Camera stream image loaded')
+                  console.log('Stream loaded')
                 }}
               />
-              {!videoRef.current?.complete && (
-                <div className="absolute inset-0 flex items-center justify-center text-white">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent mx-auto mb-2"></div>
-                    <p>Loading camera stream...</p>
-                  </div>
-                </div>
-              )}
+              <div className="absolute inset-0 flex items-center justify-center text-white opacity-0 hover:opacity-100 transition-opacity bg-black bg-opacity-30">
+                <p className="text-sm">Live Stream - Pi Camera</p>
+              </div>
             </div>
           ) : preview ? (
             <div className="space-y-3">

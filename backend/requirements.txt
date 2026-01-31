@@ -1,4 +1,10 @@
-# ============================================
+fastapi
+uvicorn
+numpy
+pillow
+pyserial
+tensorflow-macos
+tensorflow-metal
 # Requirements for Agri ROBO Tomato
 # ============================================
 # Install in virtual environment (NOT globally)
@@ -44,7 +50,14 @@ pyserial>=3.5
 # ============================================
 # GPIO Control (Raspberry Pi)
 # ============================================
+<<<<<<< HEAD
 # gpiozero is the recommended library for GPIO control on Raspberry Pi
 # It's usually pre-installed on Raspberry Pi OS, but can be installed via pip:
 # pip install gpiozero
 gpiozero>=1.6.2
+=======
+# Note: RPi.GPIO is usually installed via apt on Raspberry Pi:
+# sudo apt-get install python3-rpi.gpio
+# But can also be installed via pip:
+RPi.GPIO>=0.7.1
+>>>>>>> 56f70c66d42b1cabcabacc68dfb83897bcbd75cb
