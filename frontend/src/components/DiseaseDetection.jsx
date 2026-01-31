@@ -12,6 +12,7 @@ function DiseaseDetection() {
   const [sprayRunning, setSprayRunning] = useState(false)
   const [sprayLoading, setSprayLoading] = useState(false)
   const videoRef = useRef(null)
+  const streamIntervalRef = useRef(null)
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0]
@@ -118,23 +119,56 @@ function DiseaseDetection() {
   // Handle stream URL updates when camera becomes active
   useEffect(() => {
     if (cameraActive && videoRef.current) {
-      // Wait a moment for camera to be ready on Pi (longer delay for hardware startup)
-      const timer = setTimeout(() => {
-        if (videoRef.current && cameraActive) {
-          const streamUrl = '/api/camera/stream'
-          console.log('Setting stream URL:', streamUrl)
-          videoRef.current.src = streamUrl
-          videoRef.current.play().catch(e => {
-            console.warn('Video play warning:', e)
-          })
-        }
-      }, 1200) // 1.2s delay for Pi camera to warm up
+      console.log('Starting camera stream')
       
-      return () => clearTimeout(timer)
+      // Try MJPEG stream first, with fallback to frame polling
+      const streamUrl = '/api/camera/stream'
+      videoRef.current.src = streamUrl
+      
+      // Set a timeout to check if stream is working
+      // If it fails after 2 seconds, switch to polling
+      const fallbackTimer = setTimeout(() => {
+        if (videoRef.current && !videoRef.current.complete && cameraActive) {
+          console.log('Stream not responding, switching to frame polling')
+          startFramePolling()
+        }
+      }, 2000)
+      
+      return () => clearTimeout(fallbackTimer)
     } else if (!cameraActive && videoRef.current) {
       videoRef.current.src = ''
+      if (streamIntervalRef.current) {
+        clearInterval(streamIntervalRef.current)
+        streamIntervalRef.current = null
+      }
     }
   }, [cameraActive])
+
+  const startFramePolling = () => {
+    if (streamIntervalRef.current) {
+      clearInterval(streamIntervalRef.current)
+    }
+    
+    // Poll frames every 100ms (~10 FPS)
+    streamIntervalRef.current = setInterval(async () => {
+      if (!cameraActive || !videoRef.current) {
+        clearInterval(streamIntervalRef.current)
+        return
+      }
+      
+      try {
+        const response = await axios.get('/api/camera/frame', {
+          responseType: 'blob'
+        })
+        if (response.data && response.data.size > 0) {
+          const url = URL.createObjectURL(response.data)
+          videoRef.current.src = url
+        }
+      } catch (err) {
+        console.warn('Frame poll error:', err)
+      }
+    }, 100)
+  }
 
   // Cleanup on unmount
   useEffect(() => {
@@ -264,37 +298,23 @@ function DiseaseDetection() {
           {/* Live Camera Stream or Preview */}
           {cameraActive ? (
             <div className="border-2 border-blue-400 rounded-lg overflow-hidden bg-black min-h-[300px] flex items-center justify-center relative">
-              <video
+              <img
                 ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                style={{
-                  width: '100%',
-                  height: 'auto',
-                  maxHeight: '400px',
-                  objectFit: 'contain',
-                  display: 'block'
-                }}
+                alt="Live Camera Stream"
+                className="w-full h-auto max-h-[400px] object-contain"
+                style={{ display: 'block' }}
+                crossOrigin="anonymous"
                 onError={(e) => {
-                  console.error('Error with camera stream:', e)
-                  setError('Failed to load camera stream. Ensure camera is connected and try again.')
+                  console.error('Stream error:', e)
+                  setError('Failed to load camera stream. Check if camera is started.')
                 }}
-                onPlay={() => {
-                  console.log('Camera stream playing')
-                }}
-                onLoadedMetadata={() => {
-                  console.log('Camera stream metadata loaded')
+                onLoad={() => {
+                  console.log('Stream loaded')
                 }}
               />
-              {!videoRef.current?.paused && !videoRef.current?.currentTime ? (
-                <div className="absolute inset-0 flex items-center justify-center text-white bg-black bg-opacity-50">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent mx-auto mb-2"></div>
-                    <p>Loading camera stream...</p>
-                  </div>
-                </div>
-              ) : null}
+              <div className="absolute inset-0 flex items-center justify-center text-white opacity-0 hover:opacity-100 transition-opacity bg-black bg-opacity-30">
+                <p className="text-sm">Live Stream - Pi Camera</p>
+              </div>
             </div>
           ) : preview ? (
             <div className="space-y-3">

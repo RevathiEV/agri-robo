@@ -816,41 +816,37 @@ async def camera_stream():
         raise HTTPException(status_code=400, detail="Camera not started. Call /api/camera/start first")
     
     def generate_frames():
-        frame_count = 0
-        max_wait_iterations = 200  # ~2 seconds at 0.01s per iteration
+        """Generate MJPEG frames"""
+        wait_count = 0
+        max_wait = 300  # ~3 seconds at 0.01s per check
         
         while camera_streaming:
-            # Wait for frame to be available (with timeout)
-            wait_count = 0
-            while current_frame is None and camera_streaming and wait_count < max_wait_iterations:
+            # Wait for a frame to be captured
+            while current_frame is None and camera_streaming and wait_count < max_wait:
                 time.sleep(0.01)
                 wait_count += 1
             
-            if current_frame and camera_streaming:
+            if not camera_streaming:
+                break
+            
+            if current_frame:
                 try:
-                    # Proper MJPEG format
+                    # Standard MJPEG boundary format
+                    frame_data = current_frame
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n'
-                           b'Content-length: ' + str(len(current_frame)).encode() + b'\r\n\r\n' + current_frame + b'\r\n')
-                    frame_count += 1
+                           b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n'
+                           b'\r\n' + frame_data + b'\r\n')
                 except Exception as e:
-                    print(f"Error yielding frame: {e}")
+                    print(f"Stream error: {e}")
                     break
+                wait_count = 0
             else:
-                # If no frame available after timeout, wait a bit longer
-                time.sleep(0.1)
-            
-            time.sleep(0.01)  # Small delay between yields
+                time.sleep(0.05)
     
     return StreamingResponse(
         generate_frames(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-            "X-Accel-Buffering": "no"
-        }
+        media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
 @app.post("/api/camera/capture")
@@ -897,6 +893,23 @@ async def stop_camera():
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to stop camera: {str(e)}")
+
+@app.get("/api/camera/frame")
+async def get_latest_frame():
+    """Get the latest single frame from camera (for fallback if stream fails)"""
+    global current_frame, camera_streaming
+    
+    if not camera_streaming or current_frame is None:
+        raise HTTPException(status_code=400, detail="Camera not streaming")
+    
+    try:
+        return Response(
+            content=current_frame,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "no-cache, must-revalidate"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
