@@ -215,11 +215,21 @@ if PICAMERA2_AVAILABLE:
 @app.post("/api/camera/start")
 async def start_camera():
     global camera,camera_streaming
-
-    camera=Picamera2()
-    camera.configure(camera.create_preview_configuration())
-    camera.start()
-    camera_streaming=True
+    with camera_lock:
+        if camera_streaming and camera:
+            return {"started":True}
+        if camera:
+            try:
+                camera.stop()
+                camera.close()
+            except Exception:
+                pass
+            camera=None
+        cam=Picamera2()
+        cam.configure(cam.create_preview_configuration())
+        cam.start()
+        camera=cam
+        camera_streaming=True
     return {"started":True}
 
 @app.get("/api/camera/stream")
@@ -235,11 +245,15 @@ async def stream():
 @app.post("/api/camera/stop")
 async def stop():
     global camera_streaming,camera
-    camera_streaming=False
-    if camera:
-        camera.stop()
-        camera.close()
-        camera=None
+    with camera_lock:
+        camera_streaming=False
+        if camera:
+            try:
+                camera.stop()
+                camera.close()
+            except Exception:
+                pass
+            camera=None
     return {"stopped":True}
 
 # =====================================================
