@@ -4,8 +4,7 @@ from fastapi.responses import JSONResponse, StreamingResponse, Response
 from contextlib import asynccontextmanager
 import numpy as np
 from PIL import Image, ImageEnhance
-import tensorflow as tf
-import tensorflow.lite as tflite
+from tensorflow.keras.models import load_model
 import json, os, io, sys, threading, time, serial
 
 # =====================================================
@@ -38,9 +37,7 @@ except:
 # =====================================================
 # GLOBALS
 # =====================================================
-interpreter=None
-input_details=None
-output_details=None
+model=None
 class_mapping=None
 
 camera=None
@@ -56,23 +53,26 @@ RELAY_ACTIVE_LOW=False
 # LOAD MODEL
 # =====================================================
 def load_model_and_mapping():
-    global interpreter,input_details,output_details,class_mapping
+    global model,class_mapping
 
     backend=os.path.dirname(os.path.abspath(__file__))
     root=os.path.dirname(backend)
 
-    model_path=os.path.join(root,"model.tflite")
+    # Try best model first, then fallback to regular model
+    model_path_best=os.path.join(root,"tomato_disease_model_best.h5")
+    model_path=os.path.join(root,"tomato_disease_model.h5")
     mapping_path=os.path.join(root,"class_mapping.json")
 
-    interpreter=tflite.Interpreter(model_path=model_path)
-    interpreter.allocate_tensors()
-    input_details=interpreter.get_input_details()
-    output_details=interpreter.get_output_details()
+    if os.path.exists(model_path_best):
+        model_path=model_path_best
+    
+    model=load_model(model_path, compile=False)
+    model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
     with open(mapping_path) as f:
         class_mapping=json.load(f)
 
-    print("✅ TFLite model loaded")
+    print("✅ H5 model loaded")
 
 # =====================================================
 # MOTOR
@@ -144,15 +144,12 @@ async def detect_disease(file:UploadFile=File(...)):
 
     img_bytes=await file.read()
     image=Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    image=image.resize((224,224))
+    image=image.resize((128,128))
     img=np.array(image)/255.0
     img=np.expand_dims(img,0).astype(np.float32)
 
-    interpreter.set_tensor(input_details[0]['index'],img)
-    interpreter.invoke()
-    preds=interpreter.get_tensor(output_details[0]['index'])
-
-    idx=int(np.argmax(preds))
+    preds=model.predict(img, verbose=0)
+    idx=int(np.argmax(preds[0]))
     confidence=float(preds[0][idx])*100
     disease=class_mapping[str(idx)]
 
