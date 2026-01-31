@@ -194,13 +194,16 @@ def camera_thread():
     global camera,current_frame
     while True:
         if camera_streaming and camera:
-            req=camera.capture_request()
-            frame=req.make_array("main")
-            req.release()
-            img=Image.fromarray(frame)
-            buf=io.BytesIO()
-            img.save(buf,format="JPEG")
-            current_frame=buf.getvalue()
+            try:
+                req=camera.capture_request()
+                frame=req.make_array("main")
+                req.release()
+                img=Image.fromarray(frame).convert("RGB")
+                buf=io.BytesIO()
+                img.save(buf,format="JPEG")
+                current_frame=buf.getvalue()
+            except Exception as e:
+                print(f"Camera capture error: {e}")
         time.sleep(0.03)
 
 if PICAMERA2_AVAILABLE:
