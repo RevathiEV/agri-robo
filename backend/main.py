@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import serial
+import cv2
 
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
@@ -606,11 +607,15 @@ def convert_frame_to_rgb(frame):
     """Convert camera frame to RGB format - robust for Pi camera formats"""
     try:
         if frame is None or not hasattr(frame, 'shape'):
+            print("Error: frame is None or has no shape")
             return None
+        
+        print(f"Frame shape: {frame.shape}, dtype: {frame.dtype}")
         
         # Handle different frame shapes
         if len(frame.shape) == 3:
             if frame.shape[2] == 4:  # RGBA or BGRA
+                print("Converting from 4-channel (BGRA) to RGB")
                 # Assume BGRA format from camera
                 rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
                 rgb_frame[:, :, 0] = frame[:, :, 2]  # R
@@ -618,16 +623,26 @@ def convert_frame_to_rgb(frame):
                 rgb_frame[:, :, 2] = frame[:, :, 0]  # B
                 return rgb_frame
             elif frame.shape[2] == 3:  # RGB or BGR
+                print("Converting from 3-channel (BGR) to RGB")
                 # Assume BGR from camera, convert to RGB
-                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if 'cv2' in dir() else frame[:, :, ::-1]
+                try:
+                    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                except Exception as e:
+                    print(f"cv2 conversion failed: {e}, using fallback")
+                    return frame[:, :, ::-1]  # Flip channels as fallback
             else:
+                print(f"Unsupported channel count: {frame.shape[2]}")
                 return frame
         elif len(frame.shape) == 2:  # Grayscale
+            print("Converting from grayscale to RGB")
             return np.stack([frame, frame, frame], axis=2)
         else:
+            print(f"Unsupported frame shape: {frame.shape}")
             return frame
     except Exception as e:
-        print(f"Error converting frame: {e}")
+        print(f"Error converting frame: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return frame
 
 def process_frame(frame):
@@ -635,30 +650,25 @@ def process_frame(frame):
     try:
         rgb_frame = convert_frame_to_rgb(frame)
         if rgb_frame is None:
+            print("Warning: convert_frame_to_rgb returned None")
             return None
         
         # Ensure uint8
         if rgb_frame.dtype != np.uint8:
             rgb_frame = np.uint8(np.clip(rgb_frame, 0, 255))
         
-        image = Image.fromarray(rgb_frame, 'RGB')
-        
-        # Calculate brightness
-        mean_brightness = np.mean(rgb_frame)
-        
-        # Minimal brightness correction only if very dark
-        if mean_brightness < 30:
-            enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(1.3)
-        
-        return np.array(image)
+        return rgb_frame
     except Exception as e:
         print(f"Error processing frame: {e}")
-        return frame
+        import traceback
+        traceback.print_exc()
+        return None
 
 def camera_capture_thread():
     """Background thread that continuously captures frames when streaming"""
     global camera, camera_streaming, current_frame
+    
+    frame_count = 0
     
     while True:
         if camera_streaming and camera is not None:
@@ -675,6 +685,8 @@ def camera_capture_thread():
                                 time.sleep(0.05)
                                 continue
                             
+                            print(f"Captured frame {frame_count}: shape={frame.shape}, dtype={frame.dtype}")
+                            
                             # Process frame
                             rgb_frame = process_frame(frame)
                             
@@ -683,8 +695,10 @@ def camera_capture_thread():
                                 time.sleep(0.05)
                                 continue
                             
+                            print(f"Processed to RGB: shape={rgb_frame.shape}, dtype={rgb_frame.dtype}")
+                            
                             # Convert to JPEG
-                            image = Image.fromarray(rgb_frame, 'RGB')
+                            image = Image.fromarray(rgb_frame.astype(np.uint8), 'RGB')
                             img_bytes = io.BytesIO()
                             image.save(img_bytes, format='JPEG', quality=85)
                             img_bytes.seek(0)
@@ -693,6 +707,9 @@ def camera_capture_thread():
                             frame_data = img_bytes.getvalue()
                             if len(frame_data) > 0:
                                 current_frame = frame_data
+                                frame_count += 1
+                                if frame_count % 10 == 0:
+                                    print(f"✓ Frame {frame_count} captured and encoded to JPEG ({len(frame_data)} bytes)")
                             
                         except Exception as inner_e:
                             print(f"Error in frame capture: {type(inner_e).__name__}: {inner_e}")

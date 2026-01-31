@@ -119,22 +119,8 @@ function DiseaseDetection() {
   // Handle stream URL updates when camera becomes active
   useEffect(() => {
     if (cameraActive && videoRef.current) {
-      console.log('Starting camera stream')
-      
-      // Try MJPEG stream first, with fallback to frame polling
-      const streamUrl = '/api/camera/stream'
-      videoRef.current.src = streamUrl
-      
-      // Set a timeout to check if stream is working
-      // If it fails after 2 seconds, switch to polling
-      const fallbackTimer = setTimeout(() => {
-        if (videoRef.current && !videoRef.current.complete && cameraActive) {
-          console.log('Stream not responding, switching to frame polling')
-          startFramePolling()
-        }
-      }, 2000)
-      
-      return () => clearTimeout(fallbackTimer)
+      console.log('Starting camera frame polling')
+      startFramePolling()
     } else if (!cameraActive && videoRef.current) {
       videoRef.current.src = ''
       if (streamIntervalRef.current) {
@@ -153,6 +139,7 @@ function DiseaseDetection() {
     streamIntervalRef.current = setInterval(async () => {
       if (!cameraActive || !videoRef.current) {
         clearInterval(streamIntervalRef.current)
+        streamIntervalRef.current = null
         return
       }
       
@@ -161,11 +148,18 @@ function DiseaseDetection() {
           responseType: 'blob'
         })
         if (response.data && response.data.size > 0) {
+          // Revoke old URL to free memory
+          if (videoRef.current.src && videoRef.current.src.startsWith('blob:')) {
+            URL.revokeObjectURL(videoRef.current.src)
+          }
+          
+          // Create new blob URL and set it
           const url = URL.createObjectURL(response.data)
           videoRef.current.src = url
+          console.log('Frame updated:', response.data.size, 'bytes')
         }
       } catch (err) {
-        console.warn('Frame poll error:', err)
+        console.error('Frame poll error:', err.message)
       }
     }, 100)
   }
