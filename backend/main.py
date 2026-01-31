@@ -698,14 +698,36 @@ async def start_camera():
                     )
                 camera = Picamera2(camera_num=0)
                 
-                # Configure camera
-                try:
-                    config = camera.create_preview_configuration(
-                        main={"size": (640, 480), "format": "RGB888"},
-                        colour_space="sRGB"
-                    )
-                    camera.configure(config)
-                except:
+                # Configure camera - prefer RGB888 and sRGB colour space
+                configured = False
+                # Try several common API signatures (colour_space vs color_space), and fallbacks
+                try_opts = [
+                    {"main": {"size": (640, 480), "format": "RGB888"}, "colour_space": "sRGB"},
+                    {"main": {"size": (640, 480), "format": "RGB888"}, "color_space": "sRGB"},
+                    {"main": {"size": (640, 480), "format": "BGR888"}, "colour_space": "sRGB"},
+                    {"main": {"size": (640, 480), "format": "BGR888"}}
+                ]
+
+                for opts in try_opts:
+                    try:
+                        # Unpack known keys into the function call
+                        main_cfg = opts.get("main")
+                        cs = opts.get("colour_space")
+                        cs2 = opts.get("color_space")
+                        if cs is not None:
+                            config = camera.create_preview_configuration(main=main_cfg, colour_space=cs)
+                        elif cs2 is not None:
+                            config = camera.create_preview_configuration(main=main_cfg, color_space=cs2)
+                        else:
+                            config = camera.create_preview_configuration(main=main_cfg)
+                        camera.configure(config)
+                        configured = True
+                        break
+                    except Exception:
+                        continue
+
+                if not configured:
+                    # Last resort - default preview config
                     config = camera.create_preview_configuration(main={"size": (640, 480)})
                     camera.configure(config)
                 
