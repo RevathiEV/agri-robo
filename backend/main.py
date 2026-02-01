@@ -697,17 +697,28 @@ async def start_camera():
                         detail="No camera detected. Connect a Pi camera or USB camera and try again."
                     )
                 camera = Picamera2(camera_num=0)
+
+                # Configure camera for COLOR output (fixes black & white issue)
+                # Try RGB888 first, then BGR888, then fallback
+                config = None
+                for format_attempt in ["RGB888", "BGR888", "XRGB8888", "XBGR8888"]:
+                    try:
+                        config = camera.create_preview_configuration(
+                            main={"size": (640, 480), "format": format_attempt},
+                            colour_space="sRGB"
+                        )
+                        camera.configure(config)
+                        print(f"   ✓ Camera configured with {format_attempt} format")
+                        break
+                    except Exception as e:
+                        print(f"   Trying {format_attempt}: {e}")
+                        continue
                 
-                # Configure camera
-                try:
-                    config = camera.create_preview_configuration(
-                        main={"size": (640, 480), "format": "RGB888"},
-                        colour_space="sRGB"
-                    )
-                    camera.configure(config)
-                except:
+                # If all format attempts failed, use default
+                if config is None:
                     config = camera.create_preview_configuration(main={"size": (640, 480)})
                     camera.configure(config)
+                    print("   ⚠ Using default camera configuration")
                 
                 # Set camera controls
                 try:
