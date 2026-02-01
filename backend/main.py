@@ -644,7 +644,7 @@ def convert_frame_to_rgb(frame):
             return rgb.reshape(frame.shape[0], frame.shape[1], 3)
 
 def process_frame(frame):
-    """Apply minimal post-processing for natural look"""
+    """Apply minimal post-processing for natural color output"""
     rgb_frame = convert_frame_to_rgb(frame)
     mean_brightness = rgb_frame.mean()
     
@@ -655,12 +655,8 @@ def process_frame(frame):
         enhancer = ImageEnhance.Brightness(image)
         image = enhancer.enhance(1.3)
     
-    # Very minimal color correction
-    r, g, b = image.split()
-    b = ImageEnhance.Brightness(b).enhance(0.98)
-    r = ImageEnhance.Brightness(r).enhance(1.01)
-    g = ImageEnhance.Brightness(g).enhance(1.00)
-    image = Image.merge('RGB', (r, g, b))
+    # NO color channel manipulation - preserve natural colors for accurate disease detection
+    # This ensures the disease spots/colors are accurately represented for the model
     
     return np.array(image)
 
