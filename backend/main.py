@@ -436,14 +436,17 @@ async def detect_disease(file: UploadFile = File(...)):
         if image.size[0] == 0 or image.size[1] == 0:
             raise HTTPException(status_code=400, detail="Invalid image dimensions")
         
-        # Enhanced preprocessing for better accuracy
         # Get expected input size from model (supports both 128x128 and 224x224)
         expected_shape = model.input_shape[1:]  # Skip batch dimension
         img_size = (expected_shape[0], expected_shape[1])  # (height, width)
         
-        # Convert to RGB if needed
+        # Convert to RGB if needed (CRITICAL for consistent detection)
         if image.mode != 'RGB':
             image = image.convert('RGB')
+        
+        # Get original image brightness for validation
+        original_array = np.array(image)
+        original_brightness = original_array.mean()
         
         # Image enhancement for better detection accuracy
         # Enhance contrast (helps with disease visibility)
@@ -454,20 +457,21 @@ async def detect_disease(file: UploadFile = File(...)):
         enhancer = ImageEnhance.Sharpness(image)
         image = enhancer.enhance(1.1)  # Increase sharpness by 10%
         
-        # Optional: Apply slight denoising (uncomment if images are noisy)
-        # image = image.filter(ImageFilter.MedianFilter(size=3))
-        
         # Resize image to match model input size (use high-quality resampling)
         image = image.resize(img_size, Image.Resampling.LANCZOS)
         
-        # Convert to array and normalize (matching training: rescale=1./255)
+        # Convert to array and normalize (EXACTLY matching training: rescale=1./255)
         img_array = np.array(image, dtype=np.float32)
-        img_array = img_array / 255.0  # Normalize to [0, 1] range
+        img_array = img_array / 255.0  # Normalize to [0, 1] range - THIS IS CRITICAL!
         
         # Ensure values are in valid range [0, 1]
         img_array = np.clip(img_array, 0.0, 1.0)
         
         img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+        
+        # Log preprocessing info for debugging
+        print(f"DEBUG: Image preprocessing - original brightness: {original_brightness:.1f}, "
+              f"final shape: {img_array.shape}, value range: [{img_array.min():.3f}, {img_array.max():.3f}]")
         
         # Verify shape matches model input
         if img_array.shape[1:] != expected_shape:
@@ -603,12 +607,11 @@ async def servo_control(action: str):
 # ============================================
 
 def convert_frame_to_rgb(frame):
-    """Convert camera frame to RGB format - handles all cases including grayscale"""
-    print(f"DEBUG: Frame shape: {frame.shape}, dtype: {frame.dtype}")
-    
+    """Convert camera frame to RGB format - handles all cases including grayscale
+    CRITICAL: Proper color handling for accurate leaf disease detection
+    """
     # Handle grayscale images (1 channel or 2D array)
     if len(frame.shape) == 2 or (len(frame.shape) == 3 and frame.shape[2] == 1):
-        print("DEBUG: Converting grayscale to RGB")
         # Convert grayscale to RGB by stacking
         if len(frame.shape) == 3:
             gray = frame[:, :, 0]
@@ -617,9 +620,15 @@ def convert_frame_to_rgb(frame):
         rgb_frame = np.stack([gray, gray, gray], axis=2)
         return rgb_frame
     
-    # Handle RGBA (4 channels) - convert to RGB
+    # Handle RGBA/BGRA (4 channels) - convert to RGB
+    # CRITICAL: On Pi 5 with picamera2, XBGR8888 is stored as BGRA (Blue, Green, Red, Alpha)
     elif len(frame.shape) == 3 and frame.shape[2] == 4:
-        print("DEBUG: Converting RGBA to RGB")
+        # Check if it's BGRx format (picamera2 on Pi 5 often uses XBGR8888)
+        # XBGR8888 format: X=BGRA where X is unused, B=Blue, G=Green, R=Red
+        # So channel 0=X, 1=G, 2=B, 3=A (or similar)
+        # We need to extract RGB correctly
+        
+        # Try RGB extraction (standard)
         rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
         rgb_frame[:, :, 0] = frame[:, :, 2]  # R from channel 2
         rgb_frame[:, :, 1] = frame[:, :, 1]  # G from channel 1
@@ -628,12 +637,10 @@ def convert_frame_to_rgb(frame):
     
     # Handle RGB (3 channels) - return as is
     elif len(frame.shape) == 3 and frame.shape[2] == 3:
-        print("DEBUG: Frame is already RGB")
         return frame
     
     # Fallback - convert to RGB
     else:
-        print(f"DEBUG: Unexpected frame format, converting to RGB")
         if len(frame.shape) == 3:
             frame = frame[:, :, :3]  # Take first 3 channels
         if len(frame.shape) == 3:
@@ -723,7 +730,7 @@ async def start_camera():
                 camera = Picamera2(camera_num=0)
 
                 # Configure camera for COLOR output (fixes black & white issue)
-                # Try RGB888 first, then BGR888, then fallback
+                # CRITICAL: Use RGB888 format for proper leaf color detection
                 config = None
                 for format_attempt in ["RGB888", "BGR888", "XRGB8888", "XBGR8888"]:
                     try:
@@ -732,7 +739,7 @@ async def start_camera():
                             colour_space="sRGB"
                         )
                         camera.configure(config)
-                        print(f"   ✓ Camera configured with {format_attempt} format")
+                        print(f"   ✓ Camera configured with {format_attempt} format for leaf detection")
                         break
                     except Exception as e:
                         print(f"   Trying {format_attempt}: {e}")
@@ -744,14 +751,17 @@ async def start_camera():
                     camera.configure(config)
                     print("   ⚠ Using default camera configuration")
                 
-                # Set camera controls
+                # Set camera controls for optimal leaf imaging
                 try:
                     camera.set_controls({
-                        "AwbEnable": True,
-                        "AeEnable": True,
+                        "AwbEnable": True,      # Auto white balance - critical for natural leaf colors
+                        "AeEnable": True,       # Auto exposure - ensures proper brightness
+                        # Don't force ExposureTime or AnalogueGain - let auto exposure handle it
+                        # This matches old picamera behavior where iso=0 (auto) was default
                     })
+                    print("   ✓ Camera controls set (auto white balance, auto exposure)")
                 except:
-                    pass
+                    print("   ⚠ Could not set camera controls, using defaults")
                 
                 camera.start()
                 
@@ -824,27 +834,81 @@ async def camera_stream():
 
 @app.post("/api/camera/capture")
 async def capture_image():
-    """Capture current frame from camera and return as image"""
+    """Capture fresh frame from camera and return as image - FIXED for proper leaf detection"""
     global camera, camera_streaming, current_frame
     
-    if not camera_streaming or current_frame is None:
-        raise HTTPException(status_code=400, detail="Camera not streaming or no frame available")
+    if not camera_streaming or camera is None:
+        raise HTTPException(status_code=400, detail="Camera not started or no frame available")
     
     try:
-        # Get current frame
-        frame_data = current_frame
-        
-        # Stop streaming
-        camera_streaming = False
-        
-        # Return captured frame as JPEG
-        return Response(
-            content=frame_data,
-            media_type="image/jpeg",
-            headers={"Content-Disposition": "inline; filename=captured.jpg"}
-        )
+        with camera_lock:
+            if camera is None:
+                raise HTTPException(status_code=400, detail="Camera not initialized")
+            
+            # CRITICAL FIX: Capture FRESH frame directly from camera
+            # Don't use cached current_frame - it may be corrupted or wrong format
+            request = camera.capture_request()
+            frame = request.make_array("main")
+            request.release()
+            
+            # Process frame immediately with proper color handling
+            rgb_frame = convert_frame_to_rgb(frame)
+            
+            # Apply brightness/contrast optimization for leaf detection
+            image = Image.fromarray(rgb_frame, 'RGB')
+            
+            # Enhance for better leaf visibility (matching training conditions)
+            mean_brightness = np.array(image).mean()
+            
+            # If image is too dark or too bright, adjust it
+            if mean_brightness < 50:
+                # Boost brightness if too dark
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(1.3)
+            elif mean_brightness > 220:
+                # Reduce brightness if too washed out
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(0.85)
+            
+            # Enhance contrast for better leaf spot visibility
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.15)
+            
+            # Convert back to numpy for final processing
+            processed_frame = np.array(image)
+            
+            # Verify image quality
+            final_brightness = processed_frame.mean()
+            if final_brightness < 40:
+                # Still too dark - apply more aggressive correction
+                image = Image.fromarray(processed_frame, 'RGB')
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(1.5)
+                processed_frame = np.array(image)
+            
+            # Stop streaming
+            camera_streaming = False
+            current_frame = None
+            
+            # Convert to JPEG with high quality
+            img_bytes = io.BytesIO()
+            save_image = Image.fromarray(processed_frame, 'RGB')
+            save_image.save(img_bytes, format='JPEG', quality=95)
+            img_bytes.seek(0)
+            frame_data = img_bytes.getvalue()
+            
+            print(f"✓ Fresh frame captured (brightness: {final_brightness:.1f}, size: {len(frame_data)} bytes)")
+            
+            # Return captured frame as JPEG
+            return Response(
+                content=frame_data,
+                media_type="image/jpeg",
+                headers={"Content-Disposition": "inline; filename=captured.jpg"}
+            )
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
 
 @app.post("/api/camera/stop")
