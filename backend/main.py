@@ -603,17 +603,45 @@ async def servo_control(action: str):
 # ============================================
 
 def convert_frame_to_rgb(frame):
-    """Convert camera frame to RGB format"""
-    if len(frame.shape) == 3 and frame.shape[2] == 4:
-        rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
-        rgb_frame[:, :, 0] = frame[:, :, 2]  # R
-        rgb_frame[:, :, 1] = frame[:, :, 1]  # G
-        rgb_frame[:, :, 2] = frame[:, :, 0]  # B
+    """Convert camera frame to RGB format - handles all cases including grayscale"""
+    print(f"DEBUG: Frame shape: {frame.shape}, dtype: {frame.dtype}")
+    
+    # Handle grayscale images (1 channel or 2D array)
+    if len(frame.shape) == 2 or (len(frame.shape) == 3 and frame.shape[2] == 1):
+        print("DEBUG: Converting grayscale to RGB")
+        # Convert grayscale to RGB by stacking
+        if len(frame.shape) == 3:
+            gray = frame[:, :, 0]
+        else:
+            gray = frame
+        rgb_frame = np.stack([gray, gray, gray], axis=2)
         return rgb_frame
+    
+    # Handle RGBA (4 channels) - convert to RGB
+    elif len(frame.shape) == 3 and frame.shape[2] == 4:
+        print("DEBUG: Converting RGBA to RGB")
+        rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
+        rgb_frame[:, :, 0] = frame[:, :, 2]  # R from channel 2
+        rgb_frame[:, :, 1] = frame[:, :, 1]  # G from channel 1
+        rgb_frame[:, :, 2] = frame[:, :, 0]  # B from channel 0
+        return rgb_frame
+    
+    # Handle RGB (3 channels) - return as is
     elif len(frame.shape) == 3 and frame.shape[2] == 3:
+        print("DEBUG: Frame is already RGB")
         return frame
+    
+    # Fallback - convert to RGB
     else:
-        return frame
+        print(f"DEBUG: Unexpected frame format, converting to RGB")
+        if len(frame.shape) == 3:
+            frame = frame[:, :, :3]  # Take first 3 channels
+        if len(frame.shape) == 3:
+            return frame
+        else:
+            gray = frame.flatten()
+            rgb = np.stack([gray, gray, gray], axis=1)
+            return rgb.reshape(frame.shape[0], frame.shape[1], 3)
 
 def process_frame(frame):
     """Apply minimal post-processing for natural look"""
