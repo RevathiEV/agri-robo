@@ -14,7 +14,6 @@ import sys
 import threading
 import time
 import serial
-import cv2
 
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
@@ -604,126 +603,70 @@ async def servo_control(action: str):
 # ============================================
 
 def convert_frame_to_rgb(frame):
-    """Convert camera frame to RGB format - robust for Pi camera formats"""
-    try:
-        if frame is None or not hasattr(frame, 'shape'):
-            print("Error: frame is None or has no shape")
-            return None
-        
-        print(f"Frame shape: {frame.shape}, dtype: {frame.dtype}")
-        
-        # Handle different frame shapes
-        if len(frame.shape) == 3:
-            if frame.shape[2] == 4:  # RGBA or BGRA
-                print("Converting from 4-channel (BGRA) to RGB")
-                # Assume BGRA format from camera
-                rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
-                rgb_frame[:, :, 0] = frame[:, :, 2]  # R
-                rgb_frame[:, :, 1] = frame[:, :, 1]  # G
-                rgb_frame[:, :, 2] = frame[:, :, 0]  # B
-                return rgb_frame
-            elif frame.shape[2] == 3:  # RGB or BGR
-                print("Converting from 3-channel (BGR) to RGB")
-                # Assume BGR from camera, convert to RGB
-                try:
-                    return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                except Exception as e:
-                    print(f"cv2 conversion failed: {e}, using fallback")
-                    return frame[:, :, ::-1]  # Flip channels as fallback
-            else:
-                print(f"Unsupported channel count: {frame.shape[2]}")
-                return frame
-        elif len(frame.shape) == 2:  # Grayscale
-            print("Converting from grayscale to RGB")
-            return np.stack([frame, frame, frame], axis=2)
-        else:
-            print(f"Unsupported frame shape: {frame.shape}")
-            return frame
-    except Exception as e:
-        print(f"Error converting frame: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
+    """Convert camera frame to RGB format"""
+    if len(frame.shape) == 3 and frame.shape[2] == 4:
+        rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
+        rgb_frame[:, :, 0] = frame[:, :, 2]  # R
+        rgb_frame[:, :, 1] = frame[:, :, 1]  # G
+        rgb_frame[:, :, 2] = frame[:, :, 0]  # B
+        return rgb_frame
+    elif len(frame.shape) == 3 and frame.shape[2] == 3:
+        return frame
+    else:
         return frame
 
 def process_frame(frame):
     """Apply minimal post-processing for natural look"""
-    try:
-        rgb_frame = convert_frame_to_rgb(frame)
-        if rgb_frame is None:
-            print("Warning: convert_frame_to_rgb returned None")
-            return None
-        
-        # Ensure uint8
-        if rgb_frame.dtype != np.uint8:
-            rgb_frame = np.uint8(np.clip(rgb_frame, 0, 255))
-        
-        return rgb_frame
-    except Exception as e:
-        print(f"Error processing frame: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    rgb_frame = convert_frame_to_rgb(frame)
+    mean_brightness = rgb_frame.mean()
+    
+    image = Image.fromarray(rgb_frame, 'RGB')
+    
+    # Minimal brightness correction only if very dark
+    if mean_brightness < 30:
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(1.3)
+    
+    # Very minimal color correction
+    r, g, b = image.split()
+    b = ImageEnhance.Brightness(b).enhance(0.98)
+    r = ImageEnhance.Brightness(r).enhance(1.01)
+    g = ImageEnhance.Brightness(g).enhance(1.00)
+    image = Image.merge('RGB', (r, g, b))
+    
+    return np.array(image)
 
 def camera_capture_thread():
     """Background thread that continuously captures frames when streaming"""
     global camera, camera_streaming, current_frame
-    
-    frame_count = 0
     
     while True:
         if camera_streaming and camera is not None:
             try:
                 with camera_lock:
                     if camera is not None and camera_streaming:
-                        try:
-                            request = camera.capture_request()
-                            frame = request.make_array("main")
-                            request.release()
-                            
-                            if frame is None:
-                                print("Warning: camera.capture_request() returned None frame")
-                                time.sleep(0.05)
-                                continue
-                            
-                            print(f"Captured frame {frame_count}: shape={frame.shape}, dtype={frame.dtype}")
-                            
-                            # Process frame
-                            rgb_frame = process_frame(frame)
-                            
-                            if rgb_frame is None:
-                                print("Warning: process_frame returned None")
-                                time.sleep(0.05)
-                                continue
-                            
-                            print(f"Processed to RGB: shape={rgb_frame.shape}, dtype={rgb_frame.dtype}")
-                            
-                            # Convert to JPEG
-                            image = Image.fromarray(rgb_frame.astype(np.uint8), 'RGB')
-                            img_bytes = io.BytesIO()
-                            image.save(img_bytes, format='JPEG', quality=85)
-                            img_bytes.seek(0)
-                            
-                            # Update frame
-                            frame_data = img_bytes.getvalue()
-                            if len(frame_data) > 0:
-                                current_frame = frame_data
-                                frame_count += 1
-                                if frame_count % 10 == 0:
-                                    print(f"✓ Frame {frame_count} captured and encoded to JPEG ({len(frame_data)} bytes)")
-                            
-                        except Exception as inner_e:
-                            print(f"Error in frame capture: {type(inner_e).__name__}: {inner_e}")
-                            import traceback
-                            traceback.print_exc()
-                            time.sleep(0.1)
-                            continue
-                
+                        request = camera.capture_request()
+                        frame = request.make_array("main")
+                        request.release()
+                        
+                        # Process frame
+                        rgb_frame = process_frame(frame)
+                        
+                        # Convert to JPEG
+                        image = Image.fromarray(rgb_frame, 'RGB')
+                        img_bytes = io.BytesIO()
+                        image.save(img_bytes, format='JPEG', quality=85)
+                        img_bytes.seek(0)
+                        
+                        # Update frame (no lock needed for simple assignment)
+                        frame_data = img_bytes.getvalue()
+                        current_frame = frame_data
                 time.sleep(0.033)  # ~30 FPS
             except Exception as e:
-                print(f"Camera capture thread error: {e}")
+                print(f"Camera capture error: {e}")
                 import traceback
                 traceback.print_exc()
-                time.sleep(0.5)
+                time.sleep(0.1)
         else:
             time.sleep(0.1)
 
@@ -755,36 +698,14 @@ async def start_camera():
                     )
                 camera = Picamera2(camera_num=0)
                 
-                # Configure camera - prefer RGB888 and sRGB colour space
-                configured = False
-                # Try several common API signatures (colour_space vs color_space), and fallbacks
-                try_opts = [
-                    {"main": {"size": (640, 480), "format": "RGB888"}, "colour_space": "sRGB"},
-                    {"main": {"size": (640, 480), "format": "RGB888"}, "color_space": "sRGB"},
-                    {"main": {"size": (640, 480), "format": "BGR888"}, "colour_space": "sRGB"},
-                    {"main": {"size": (640, 480), "format": "BGR888"}}
-                ]
-
-                for opts in try_opts:
-                    try:
-                        # Unpack known keys into the function call
-                        main_cfg = opts.get("main")
-                        cs = opts.get("colour_space")
-                        cs2 = opts.get("color_space")
-                        if cs is not None:
-                            config = camera.create_preview_configuration(main=main_cfg, colour_space=cs)
-                        elif cs2 is not None:
-                            config = camera.create_preview_configuration(main=main_cfg, color_space=cs2)
-                        else:
-                            config = camera.create_preview_configuration(main=main_cfg)
-                        camera.configure(config)
-                        configured = True
-                        break
-                    except Exception:
-                        continue
-
-                if not configured:
-                    # Last resort - default preview config
+                # Configure camera
+                try:
+                    config = camera.create_preview_configuration(
+                        main={"size": (640, 480), "format": "RGB888"},
+                        colour_space="sRGB"
+                    )
+                    camera.configure(config)
+                except:
                     config = camera.create_preview_configuration(main={"size": (640, 480)})
                     camera.configure(config)
                 
@@ -833,37 +754,37 @@ async def camera_stream():
         raise HTTPException(status_code=400, detail="Camera not started. Call /api/camera/start first")
     
     def generate_frames():
-        """Generate MJPEG frames"""
-        wait_count = 0
-        max_wait = 300  # ~3 seconds at 0.01s per check
-        
+        frame_count = 0
         while camera_streaming:
-            # Wait for a frame to be captured
-            while current_frame is None and camera_streaming and wait_count < max_wait:
+            # Wait for frame to be available (with timeout)
+            wait_count = 0
+            while current_frame is None and camera_streaming and wait_count < 100:
                 time.sleep(0.01)
                 wait_count += 1
             
-            if not camera_streaming:
-                break
-            
             if current_frame:
                 try:
-                    # Standard MJPEG boundary format
-                    frame_data = current_frame
                     yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n'
-                           b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n'
-                           b'\r\n' + frame_data + b'\r\n')
+                           b'Content-Type: image/jpeg\r\n\r\n' + current_frame + b'\r\n')
+                    frame_count += 1
                 except Exception as e:
-                    print(f"Stream error: {e}")
+                    print(f"Error yielding frame: {e}")
                     break
-                wait_count = 0
             else:
-                time.sleep(0.05)
+                # If no frame available, wait a bit longer
+                time.sleep(0.1)
+            
+            time.sleep(0.033)  # ~30 FPS
     
     return StreamingResponse(
         generate_frames(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no"  # Disable buffering for nginx if used
+        }
     )
 
 @app.post("/api/camera/capture")
@@ -910,23 +831,6 @@ async def stop_camera():
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to stop camera: {str(e)}")
-
-@app.get("/api/camera/frame")
-async def get_latest_frame():
-    """Get the latest single frame from camera (for fallback if stream fails)"""
-    global current_frame, camera_streaming
-    
-    if not camera_streaming or current_frame is None:
-        raise HTTPException(status_code=400, detail="Camera not streaming")
-    
-    try:
-        return Response(
-            content=current_frame,
-            media_type="image/jpeg",
-            headers={"Cache-Control": "no-cache, must-revalidate"}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

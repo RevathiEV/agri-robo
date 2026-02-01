@@ -32,7 +32,7 @@ function DiseaseDetection() {
     try {
       setError(null)
       const response = await axios.post('/api/camera/start')
-      if (response.data.started) {
+      if (response.data.success) {
         setCameraActive(true)
         setPreview(null)
         setSelectedImage(null)
@@ -119,8 +119,11 @@ function DiseaseDetection() {
   // Handle stream URL updates when camera becomes active
   useEffect(() => {
     if (cameraActive && videoRef.current) {
-      console.log('Starting camera frame polling')
-      startFramePolling()
+      console.log('Starting MJPEG camera stream')
+      // Use the MJPEG stream endpoint directly as the image src
+      // This is more efficient than polling and works with the backend's /api/camera/stream endpoint
+      const apiUrl = import.meta.env.VITE_API_URL || ''
+      videoRef.current.src = `${apiUrl}/api/camera/stream`
     } else if (!cameraActive && videoRef.current) {
       videoRef.current.src = ''
       if (streamIntervalRef.current) {
@@ -129,40 +132,6 @@ function DiseaseDetection() {
       }
     }
   }, [cameraActive])
-
-  const startFramePolling = () => {
-    if (streamIntervalRef.current) {
-      clearInterval(streamIntervalRef.current)
-    }
-    
-    // Poll frames every 100ms (~10 FPS)
-    streamIntervalRef.current = setInterval(async () => {
-      if (!cameraActive || !videoRef.current) {
-        clearInterval(streamIntervalRef.current)
-        streamIntervalRef.current = null
-        return
-      }
-      
-      try {
-        const response = await axios.get('/api/camera/frame', {
-          responseType: 'blob'
-        })
-        if (response.data && response.data.size > 0) {
-          // Revoke old URL to free memory
-          if (videoRef.current.src && videoRef.current.src.startsWith('blob:')) {
-            URL.revokeObjectURL(videoRef.current.src)
-          }
-          
-          // Create new blob URL and set it
-          const url = URL.createObjectURL(response.data)
-          videoRef.current.src = url
-          console.log('Frame updated:', response.data.size, 'bytes')
-        }
-      } catch (err) {
-        console.error('Frame poll error:', err.message)
-      }
-    }, 100)
-  }
 
   // Cleanup on unmount
   useEffect(() => {
