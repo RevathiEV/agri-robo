@@ -181,8 +181,9 @@ function DiseaseDetection() {
   }
 
   const startSpray = async () => {
-    if (!result || !result.can_spray) {
-      setError('Please detect a disease first before starting the dispenser.')
+    // Check if a disease is detected (not healthy and not "not a leaf")
+    if (!result || result.is_healthy || result.is_not_a_leaf) {
+      setError('Please detect a disease first before starting the pump.')
       return
     }
 
@@ -197,7 +198,7 @@ function DiseaseDetection() {
       }
     } catch (err) {
       console.error('Error starting spray:', err)
-      setError(err.response?.data?.detail || 'Failed to start dispenser. Please try again.')
+      setError(err.response?.data?.detail || 'Failed to start pump. Please try again.')
     } finally {
       setSprayLoading(false)
     }
