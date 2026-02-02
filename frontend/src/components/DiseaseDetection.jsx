@@ -398,55 +398,60 @@ function DiseaseDetection() {
                 </div>
               </div>
 
-              {/* Spray Control Buttons - Only show if disease is detected (not healthy/not a leaf) */}
-              {result.can_spray && (
-                <div className="space-y-3">
-                  <div className="flex gap-2">
-                    {!sprayRunning ? (
-                      <button
-                        onClick={startSpray}
-                        disabled={sprayLoading || !result.can_spray}
-                        className="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      >
-                        {sprayLoading ? (
-                          <>
-                            <span className="animate-spin">⏳</span>
-                            Starting...
-                          </>
-                        ) : (
-                          <>
-                            💧 Start Dispenser
-                          </>
-                        )}
-                      </button>
-                    ) : (
-                      <button
-                        onClick={stopSpray}
-                        disabled={sprayLoading}
-                        className="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      >
-                        {sprayLoading ? (
-                          <>
-                            <span className="animate-spin">⏳</span>
-                            Stopping...
-                          </>
-                        ) : (
-                          <>
-                            ⏹️ Stop Dispenser
-                          </>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                  {sprayRunning && (
-                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                      <p className="text-sm text-blue-700 font-medium">
-                        💧 Dispenser is running. Click "Stop Dispenser" to stop.
-                      </p>
-                    </div>
+              {/* Spray Control Buttons - Always visible for manual control */}
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  {!sprayRunning ? (
+                    <button
+                      onClick={startSpray}
+                      disabled={sprayLoading}
+                      className="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {sprayLoading ? (
+                        <>
+                          <span className="animate-spin">⏳</span>
+                          Starting...
+                        </>
+                      ) : (
+                        <>
+                          💧 Start Pump
+                        </>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={stopSpray}
+                      disabled={sprayLoading}
+                      className="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {sprayLoading ? (
+                        <>
+                          <span className="animate-spin">⏳</span>
+                          Stopping...
+                        </>
+                      ) : (
+                        <>
+                          ⏹️ Stop Pump
+                        </>
+                      )}
+                    </button>
                   )}
                 </div>
-              )}
+                {sprayRunning && (
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <p className="text-sm text-blue-700 font-medium">
+                      💧 Pump is running. Click "Stop Pump" to stop.
+                    </p>
+                  </div>
+                )}
+                {result && !result.is_healthy && !result.is_not_a_leaf && (
+                  <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <p className="text-sm text-yellow-700 font-medium">
+                      ⚠️ Disease detected! Pump will automatically run for 3 seconds after detection.
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
