@@ -792,5 +792,231 @@ async def stop_camera():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.post("/api/camera/start")
+async def start_camera():
+    """Start Pi camera stream"""
+    global camera, camera_streaming
+    
+    if not PICAMERA2_AVAILABLE:
+        raise HTTPException(status_code=503, detail="picamera2 not available on this system")
+    
+    try:
+        with camera_lock:
+            if camera is None:
+                # Check if any camera is detected before opening (avoids IndexError when no camera)
+                try:
+                    cam_info = Picamera2.global_camera_info()
+                except Exception:
+                    cam_info = []
+                if not cam_info or len(cam_info) == 0:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="No camera detected. Connect a Pi camera or USB camera and try again."
+                    )
+                camera = Picamera2(camera_num=0)
 
+                # Configure camera for COLOR output (fixes black & white issue)
+                # CRITICAL: Use RGB888 format for proper leaf color detection
+                config = None
+                for format_attempt in ["RGB888", "BGR888", "XRGB8888", "XBGR8888"]:
+                    try:
+                        config = camera.create_preview_configuration(
+                            main={"size": (640, 480), "format": format_attempt},
+                            colour_space="sRGB"
+                        )
+                        camera.configure(config)
+                        print(f"   ✓ Camera configured with {format_attempt} format for leaf detection")
+                        break
+                    except Exception as e:
+                        print(f"   Trying {format_attempt}: {e}")
+                        continue
+                
+                # If all format attempts failed, use default
+                if config is None:
+                    config = camera.create_preview_configuration(main={"size": (640, 480)})
+                    camera.configure(config)
+                    print("   ⚠ Using default camera configuration")
+                
+                # Set camera controls for optimal leaf imaging
+                try:
+                    camera.set_controls({
+                        "AwbEnable": True,      # Auto white balance - critical for natural leaf colors
+                        "AeEnable": True,       # Auto exposure - ensures proper brightness
+                        # Don't force ExposureTime or AnalogueGain - let auto exposure handle it
+                        # This matches old picamera behavior where iso=0 (auto) was default
+                    })
+                    print("   ✓ Camera controls set (auto white balance, auto exposure)")
+                except:
+                    print("   ⚠ Could not set camera controls, using defaults")
+                
+                camera.start()
+                
+                # Warm up camera
+                for i in range(5):
+                    test_request = camera.capture_request()
+                    test_request.release()
+                    time.sleep(0.3)
+            
+            camera_streaming = True
+            # Reset frame buffer - wait a moment for first frame
+            current_frame = None
+            time.sleep(0.5)  # Give camera time to start capturing
+        
+        return {"success": True, "message": "Camera started"}
+    
+    except HTTPException:
+        raise
+    except IndexError as e:
+        raise HTTPException(
+            status_code=503,
+            detail="No camera detected. Connect a Pi camera or USB camera and try again."
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to start camera: {str(e)}")
+
+@app.get("/api/camera/stream")
+async def camera_stream():
+    """MJPEG stream endpoint for live video"""
+    global camera_streaming, current_frame
+    
+    if not camera_streaming:
+        raise HTTPException(status_code=400, detail="Camera not started. Call /api/camera/start first")
+    
+    def generate_frames():
+        frame_count = 0
+        while camera_streaming:
+            # Wait for frame to be available (with timeout)
+            wait_count = 0
+            while current_frame is None and camera_streaming and wait_count < 100:
+                time.sleep(0.01)
+                wait_count += 1
+            
+            if current_frame:
+                try:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + current_frame + b'\r\n')
+                    frame_count += 1
+                except Exception as e:
+                    print(f"Error yielding frame: {e}")
+                    break
+            else:
+                # If no frame available, wait a bit longer
+                time.sleep(0.1)
+            
+            time.sleep(0.033)  # ~30 FPS
+    
+    return StreamingResponse(
+        generate_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "X-Accel-Buffering": "no"  # Disable buffering for nginx if used
+        }
+    )
+
+@app.post("/api/camera/capture")
+async def capture_image():
+    """Capture fresh frame from camera and return as image - FIXED for proper leaf detection"""
+    global camera, camera_streaming, current_frame
+    
+    if not camera_streaming or camera is None:
+        raise HTTPException(status_code=400, detail="Camera not started or no frame available")
+    
+    try:
+        with camera_lock:
+            if camera is None:
+                raise HTTPException(status_code=400, detail="Camera not initialized")
+            
+            # CRITICAL FIX: Capture FRESH frame directly from camera
+            # Don't use cached current_frame - it may be corrupted or wrong format
+            request = camera.capture_request()
+            frame = request.make_array("main")
+            request.release()
+            
+            # Process frame immediately with proper color handling
+            rgb_frame = convert_frame_to_rgb(frame)
+            
+            # Apply brightness/contrast optimization for leaf detection
+            image = Image.fromarray(rgb_frame, 'RGB')
+            
+            # Enhance for better leaf visibility (matching training conditions)
+            mean_brightness = np.array(image).mean()
+            
+            # If image is too dark or too bright, adjust it
+            if mean_brightness < 50:
+                # Boost brightness if too dark
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(1.3)
+            elif mean_brightness > 220:
+                # Reduce brightness if too washed out
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(0.85)
+            
+            # Enhance contrast for better leaf spot visibility
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.15)
+            
+            # Convert back to numpy for final processing
+            processed_frame = np.array(image)
+            
+            # Verify image quality
+            final_brightness = processed_frame.mean()
+            if final_brightness < 40:
+                # Still too dark - apply more aggressive correction
+                image = Image.fromarray(processed_frame, 'RGB')
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(1.5)
+                processed_frame = np.array(image)
+            
+            # Stop streaming
+            camera_streaming = False
+            current_frame = None
+            
+            # Convert to JPEG with high quality
+            img_bytes = io.BytesIO()
+            save_image = Image.fromarray(processed_frame, 'RGB')
+            save_image.save(img_bytes, format='JPEG', quality=95)
+            img_bytes.seek(0)
+            frame_data = img_bytes.getvalue()
+            
+            print(f"✓ Fresh frame captured (brightness: {final_brightness:.1f}, size: {len(frame_data)} bytes)")
+            
+            # Return captured frame as JPEG
+            return Response(
+                content=frame_data,
+                media_type="image/jpeg",
+                headers={"Content-Disposition": "inline; filename=captured.jpg"}
+            )
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
+
+@app.post("/api/camera/stop")
+async def stop_camera():
+    """Stop camera stream and release resources"""
+    global camera, camera_streaming, current_frame
+    
+    try:
+        camera_streaming = False
+        current_frame = None
+        
+        with camera_lock:
+            if camera is not None:
+                camera.stop()
+                camera.close()
+                camera = None
+        
+        return {"success": True, "message": "Camera stopped"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to stop camera: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
