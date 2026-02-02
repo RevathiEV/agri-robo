@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, Response
@@ -28,7 +29,6 @@ except ImportError:
     print("Warning: picamera2 not available. Camera features will be disabled.")
 
 # Try to import gpiozero for relay control (water pump)
-# Using LED class (same as your example) - simpler and works perfectly for relays
 try:
     from gpiozero import LED
     GPIOZERO_AVAILABLE = True
@@ -40,33 +40,78 @@ except ImportError:
 # GPIO pin for relay control (Pin 12 = GPIO 18)
 RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
 
-# Relay polarity configuration for SRD-05VDC-SL-C
-# SRD-05VDC-SL-C can be configured via jumper as active-HIGH or active-LOW
-# If GPIO shows 0 (OFF) but relay is physically ON, the relay is active-LOW
-# Set active_high=False if your relay is active-low (LOW = ON, HIGH = OFF) - YOUR CASE
-# Set active_high=True if your relay is active-high (HIGH = ON, LOW = OFF)
-RELAY_ACTIVE_HIGH = False  # Changed to False because GPIO=0 but relay is ON (active-LOW relay)
+# Initialize relay using gpiozero LED class
+# For active-LOW relay (SRD-05VDC-SL-C): LOW signal = relay ON, HIGH signal = relay OFF
+relay = None
 
-def cleanup_gpio_pin(pin_number):
-    """Try to clean up GPIO pin if it's busy from a previous instance"""
+def initialize_relay():
+    """Initialize relay at startup - MUST be called before using relay"""
+    global relay
+    
     if not GPIOZERO_AVAILABLE:
+        print("gpiozero not available - Motor control via GPIO disabled")
+        relay = None
         return False
+    
     try:
-        # Try to create and immediately close a device to release the pin
-        # This helps if a previous instance didn't clean up properly
-        temp_device = LED(pin_number, active_high=RELAY_ACTIVE_HIGH)
-        temp_device.off()  # Ensure it's OFF
-        temp_device.close()  # Close to release the pin
-        time.sleep(0.2)
+        # Create LED object with active_high=False for active-LOW relay
+        # IMPORTANT: Create it and IMMEDIATELY turn it OFF
+        relay = LED(RELAY_GPIO_PIN, active_high=False)
+        relay.off()  # Ensure relay is OFF at startup (HIGH signal for active-LOW)
+        print(f"✓ Relay initialized on GPIO {RELAY_GPIO_PIN} (Physical Pin 12)")
+        print("✓ Relay is OFF at startup (will only turn ON for 3 seconds when disease is detected)")
         return True
     except Exception as e:
-        # If we can't clean up, that's okay - we'll try to initialize anyway
+        error_msg = str(e)
+        if "GPIO busy" in error_msg or "busy" in error_msg.lower():
+            print(f"ERROR: GPIO Pin {RELAY_GPIO_PIN} is busy (likely from a previous instance)")
+            print("SOLUTION: Please run the following commands to clean up:")
+            print(f"  1. Find the process: sudo lsof | grep gpio")
+            print(f"  2. Kill any Python processes using GPIO: pkill -f 'python.*main.py'")
+            print(f"  3. Wait 2-3 seconds, then restart the application")
+        else:
+            print(f"Warning: Could not initialize GPIO: {e}")
+        print("Motor control via GPIO will not be available.")
+        relay = None
         return False
+
+def activate_motor_for_duration(seconds=3):
+    """
+    Turn relay ON for specified duration, then turn OFF automatically.
+    Runs in a background thread to avoid blocking the API response.
+    
+    Relay only activates when disease is detected (NOT healthy, NOT Not_A_Leaf).
+    """
+    global relay
+    
+    if relay is None:
+        print("Warning: Relay not available - cannot activate motor")
+        return
+    
+    def run():
+        try:
+            relay.on()  # Turn relay ON
+            print(f"✓ Water pump activated (disease detected) - will turn OFF in {seconds}s")
+            time.sleep(seconds)
+            relay.off()  # Turn relay OFF
+            print(f"✓ Water pump deactivated after {seconds}s")
+        except Exception as e:
+            print(f"ERROR controlling motor: {e}")
+            # Ensure motor is turned OFF on error
+            try:
+                relay.off()
+                print("✓ Water pump forced OFF due to error")
+            except:
+                pass
+    
+    # Start in background thread (non-blocking)
+    threading.Thread(target=run, daemon=True).start()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
-    global serial_connection, relay_device
+    global serial_connection, relay
+    
     # Startup
     try:
         load_model_and_mapping()
@@ -85,128 +130,44 @@ async def lifespan(app: FastAPI):
         print("Motor and servo control will not be available.")
         serial_connection = None
     
-    # Initialize GPIO for relay control (motor/pump) using gpiozero LED class
-    # Using LED class (same as your example) - simpler approach for SRD-05VDC-SL-C relay
-    if GPIOZERO_AVAILABLE:
-        try:
-            # First, try to clean up GPIO pin if it's busy from a previous instance
-            print(f"Attempting to initialize GPIO Pin {RELAY_GPIO_PIN}...")
-            if not cleanup_gpio_pin(RELAY_GPIO_PIN):
-                print(f"Note: Could not clean up GPIO Pin {RELAY_GPIO_PIN}, will try to initialize anyway...")
-            
-            # Wait a bit for GPIO to be released
-            time.sleep(0.5)
-            
-            # IMPORTANT: For SRD-05VDC-SL-C relay module
-            # Your relay is active-LOW (LOW = ON, HIGH = OFF) based on GPIO=0 but relay ON
-            # Using LED class - same as your example, but for relay control
-            # For active-LOW relay: LOW signal = relay ON, HIGH signal = relay OFF
-            # We need to ensure the GPIO pin is HIGH to keep the relay OFF
-            
-            # Create LED object with active_high=False for active-LOW relay
-            # IMPORTANT: Create it and IMMEDIATELY turn it OFF (send HIGH signal)
-            relay_device = LED(RELAY_GPIO_PIN, active_high=RELAY_ACTIVE_HIGH)
-            
-            # CRITICAL: Immediately turn OFF the relay
-            # For active-LOW relay: HIGH signal = relay OFF, LOW signal = relay ON
-            # relay_device.off() sends HIGH when active_high=False, which turns relay OFF
-            relay_device.off()  # Send HIGH signal to keep relay OFF (for active-LOW)
-            time.sleep(0.3)  # Delay to ensure GPIO settles
-            relay_device.off()  # Second OFF command for safety
-            time.sleep(0.2)
-            relay_device.off()  # Third OFF command - be absolutely sure
-            time.sleep(0.1)
-            relay_device.off()  # Fourth OFF - maximum safety
-            time.sleep(0.1)
-            
-            # Verify the state
-            try:
-                if hasattr(relay_device, 'value'):
-                    current_value = relay_device.value
-                    # For active-LOW: value=1 means GPIO=HIGH=relay OFF, value=0 means GPIO=LOW=relay ON
-                    expected_value = 1 if not RELAY_ACTIVE_HIGH else 0  # For active-LOW, we want HIGH (1) to turn OFF
-                    print(f"GPIO Pin {RELAY_GPIO_PIN} current value: {current_value} (for active-LOW: 1=OFF, 0=ON)")
-                    if current_value != expected_value:
-                        print(f"WARNING: GPIO value is {current_value}, expected {expected_value} for relay OFF")
-                        relay_device.off()  # Force it OFF again
-            except:
-                pass
-            
-            relay_type = "active-high" if RELAY_ACTIVE_HIGH else "active-low"
-            print(f"GPIO Pin {RELAY_GPIO_PIN} (Physical Pin 12) initialized - Water Pump OFF")
-            print(f"Relay type: {relay_type} (SRD-05VDC-SL-C - Using gpiozero LED class)")
-            print("Water pump will ONLY activate when disease is detected via /api/detect-disease endpoint")
-            print("✓ Motor is OFF and will remain OFF until disease is detected")
-        except Exception as e:
-            error_msg = str(e)
-            if "GPIO busy" in error_msg or "busy" in error_msg.lower():
-                print(f"ERROR: GPIO Pin {RELAY_GPIO_PIN} is busy (likely from a previous instance)")
-                print("SOLUTION: Please run the following commands to clean up:")
-                print(f"  1. Find the process: sudo lsof | grep gpio")
-                print(f"  2. Kill any Python processes using GPIO: pkill -f 'python.*main.py'")
-                print(f"  3. Wait 2-3 seconds, then restart the application")
-                print(f"  4. If still busy, try: sudo systemctl restart pigpio (if using pigpio)")
-            else:
-                print(f"Warning: Could not initialize GPIO: {e}")
-            print("Motor control via GPIO will not be available.")
-            relay_device = None
-    else:
-        print("gpiozero not available - Motor control via GPIO disabled")
-        relay_device = None
+    # Initialize relay - MUST be OFF at startup
+    initialize_relay()
     
-    # Final safety check - ensure motor is OFF after all initialization
-    if relay_device is not None:
-        try:
-            relay_device.off()
-            print("✓ Final safety check: Motor confirmed OFF")
-        except:
-            pass
+    # Ensure relay is OFF after initialization (safety check)
+    if relay is not None:
+        relay.off()
+        print("✓ Final safety check: Relay confirmed OFF")
     
     yield
-    
-    # Additional safety check - ensure motor is OFF when app starts serving requests
-    # This runs right after the app starts serving (after yield)
-    if relay_device is not None:
-        try:
-            relay_device.off()
-            time.sleep(0.1)
-            relay_device.off()  # Double check
-            print("✓ App serving: Water pump confirmed OFF")
-        except:
-            pass
     
     # Shutdown - cleanup
     if serial_connection and serial_connection.is_open:
         serial_connection.close()
         print("Bluetooth serial connection closed")
     
-    # Cleanup GPIO - ensure motor is OFF before shutdown
-    if relay_device is not None:
+    # Force relay OFF on shutdown
+    if relay is not None:
         try:
-            # Turn motor OFF before cleanup (multiple safety checks)
-            relay_device.off()
-            time.sleep(0.1)
-            relay_device.off()  # Second OFF for safety
-            relay_device.close()
-            print("GPIO cleaned up - Water pump turned OFF")
+            relay.off()
+            relay.close()
+            print("✓ Shutdown: Relay turned OFF and cleaned up")
         except Exception as e:
             print(f"Warning: Error during GPIO cleanup: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
 # CORS middleware to allow React frontend to access the API
-# Updated to include Pi's IP address
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000", 
         "http://localhost:5173", 
         "http://127.0.0.1:3000",
-        "http://10.222.54.41:3000",  # Old Pi's IP with port 3000
-        "http://10.222.54.41:5173",  # Old Pi's IP with port 5173
-        "http://10.86.141.41:3000",  # New Pi's IP with port 3000
-        "http://10.86.141.41:5173",  # New Pi's IP with port 5173
-        "*"  # Allow all origins for development
+        "http://10.222.54.41:3000",
+        "http://10.222.54.41:5173",
+        "http://10.86.141.41:3000",
+        "http://10.86.141.41:5173",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -226,80 +187,9 @@ current_frame = None
 # Global variable for serial connection (Bluetooth)
 serial_connection = None
 
-# Global variable for relay device (water pump)
-relay_device = None
+# Global variable for relay (water pump) - initialized in lifespan
+relay = None
 
-# GPIO pin for relay control (Pin 12 = GPIO 18)
-RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
-
-def cleanup_gpio_pin(pin_number):
-    """Try to clean up GPIO pin if it's busy from a previous instance"""
-    if not GPIOZERO_AVAILABLE:
-        return False
-    try:
-        # Try to create and immediately close a device to release the pin
-        # This helps if a previous instance didn't clean up properly
-        temp_device = LED(pin_number, active_high=RELAY_ACTIVE_HIGH)
-        temp_device.off()  # Ensure it's OFF
-        temp_device.close()  # Close to release the pin
-        time.sleep(0.2)
-        return True
-    except Exception as e:
-        # If we can't clean up, that's okay - we'll try to initialize anyway
-        return False
-
-# Note: RELAY_ACTIVE_HIGH is defined earlier in the file (line ~47)
-
-
-def activate_motor_for_duration(duration_seconds: float = 3.0):
-    """
-    Activate motor (relay) for specified duration, then turn it off automatically.
-    Runs in a background thread to avoid blocking the API response.
-    
-    IMPORTANT: This function should ONLY be called from /api/detect-disease endpoint
-    when a disease is detected (not healthy, not Not_A_Leaf).
-    
-    Args:
-        duration_seconds: How long to keep motor ON (default: 3.0 seconds)
-    
-    Returns:
-        bool: True if motor was activated, False if GPIO not available
-    """
-    global relay_device
-    
-    if relay_device is None:
-        print("Warning: Relay device not available - cannot activate motor")
-        return False
-    
-    def motor_control_thread():
-        """Background thread to control motor timing"""
-        try:
-            # Turn motor ON
-            relay_device.on()
-            print(f"✓ Water pump activated (GPIO {RELAY_GPIO_PIN}) - Disease detected")
-            
-            # Wait for specified duration
-            time.sleep(duration_seconds)
-            
-            # Turn motor OFF
-            relay_device.off()
-            print(f"✓ Water pump deactivated (GPIO {RELAY_GPIO_PIN}) after {duration_seconds}s")
-        except Exception as e:
-            print(f"ERROR controlling motor: {e}")
-            import traceback
-            traceback.print_exc()
-            # Ensure motor is turned OFF on error
-            try:
-                relay_device.off()
-                print(f"✓ Water pump forced OFF due to error")
-            except:
-                pass
-    
-    # Start motor control in background thread (non-blocking)
-    motor_thread = threading.Thread(target=motor_control_thread, daemon=True)
-    motor_thread.start()
-    
-    return True
 
 def load_model_and_mapping():
     """Load the disease detection model and class mapping - TensorFlow 2.20.0 compatible"""
@@ -339,12 +229,10 @@ def load_model_and_mapping():
     
     # TensorFlow 2.20.0 compatible loading with compile=False
     try:
-        # Try loading with compile=False for better cross-version compatibility
         print("Attempting to load model with compile=False...")
         model = load_model(model_path, compile=False)
         print("✓ Model loaded (compile=False)")
         
-        # Recompile with the same settings as training
         print("Recompiling model...")
         model.compile(
             optimizer='adam',
@@ -376,9 +264,11 @@ def load_model_and_mapping():
     print(f"Class mapping loaded: {len(class_mapping)} classes")
     print("Model and class mapping loaded successfully!")
 
+
 @app.get("/")
 async def root():
     return {"message": "Agri ROBO API", "status": "running"}
+
 
 @app.get("/health")
 async def health_check():
@@ -405,12 +295,19 @@ async def health_check():
         "tensorflow_version": tf.__version__
     }
 
+
 @app.post("/api/detect-disease")
 async def detect_disease(file: UploadFile = File(...)):
     """
     Detect disease from uploaded image using the trained CNN model.
     The model automatically detects the required input size (128x128 or 224x224).
+    
+    Relay ONLY turns ON for 3 seconds when:
+    - Disease is NOT healthy
+    - Disease is NOT Not_A_Leaf
     """
+    global relay
+    
     if model is None or class_mapping is None:
         raise HTTPException(
             status_code=503,
@@ -495,22 +392,19 @@ async def detect_disease(file: UploadFile = File(...)):
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
         
-        # Control motor: Turn ON ONLY if disease is detected (not healthy, not Not_A_Leaf)
-        # Motor should NEVER activate for healthy or Not_A_Leaf
-        # IMPORTANT: Motor only activates when frontend shows "disease detected"
-        motor_activated = False
+        # Control relay: Turn ON ONLY if disease is detected (not healthy, not Not_A_Leaf)
+        # Relay should NEVER activate for healthy or Not_A_Leaf
         if not is_healthy and not is_not_a_leaf:
-            # Disease detected - activate motor for 3 seconds
-            # This is the ONLY place where motor should turn ON
-            print(f"✓ Disease detected: {disease_name} - Activating water pump for 3 seconds")
-            motor_activated = activate_motor_for_duration(3.0)
+            # Disease detected - activate relay for 3 seconds
+            activate_motor_for_duration(3)
+            print(f"✓ Disease detected: {disease_name} - Water pump activated for 3 seconds")
         else:
-            # Healthy or Not_A_Leaf - motor stays OFF
+            # Healthy or Not_A_Leaf - relay stays OFF
             print(f"✓ Detection: {disease_name} - Water pump stays OFF (healthy or not a leaf)")
-            # Explicitly ensure motor is OFF (safety check)
-            if relay_device is not None:
+            # Explicitly ensure relay is OFF (safety check)
+            if relay is not None:
                 try:
-                    relay_device.off()
+                    relay.off()
                 except:
                     pass
         
@@ -521,7 +415,6 @@ async def detect_disease(file: UploadFile = File(...)):
             "is_healthy": is_healthy,
             "is_not_a_leaf": is_not_a_leaf,
             "raw_disease_name": disease_name,
-            "motor_activated": motor_activated,
             "model_info": {
                 "input_shape": str(model.input_shape),
                 "num_classes": len(class_mapping)
@@ -538,6 +431,7 @@ async def detect_disease(file: UploadFile = File(...)):
             status_code=500, 
             detail=f"Error processing image: {str(e)}"
         )
+
 
 # Motor and servo control endpoints via Bluetooth serial
 @app.post("/api/motor/control")
@@ -572,12 +466,12 @@ async def motor_control(direction: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
 
+
 @app.post("/api/servo/control")
 async def servo_control(action: str):
     """
     Control servo motor for fertilizer via Bluetooth serial connection
     ESP32 expects single character commands: A (start), X (stop)
-    Note: Servo control needs to be implemented in ESP32 code
     """
     global serial_connection
     valid_actions = ["start", "stop"]
@@ -588,7 +482,6 @@ async def servo_control(action: str):
         raise HTTPException(status_code=503, detail="Bluetooth serial connection not available")
     
     try:
-        # Map action to ESP32 single character command
         command_map = {
             "start": "A",
             "stop": "X"
@@ -602,103 +495,15 @@ async def servo_control(action: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
 
-# ============================================
-# Water Pump / Spray Control Endpoints
-# ============================================
-
-@app.post("/api/spray/start")
-async def start_spray():
-    """
-    Turn ON water pump/spray manually from frontend button.
-    Pump will stay ON until /api/spray/stop is called.
-    Relay is OFF by default when app starts.
-    """
-    global relay_device
-    
-    if relay_device is None:
-        raise HTTPException(
-            status_code=503, 
-            detail="Water pump not available. GPIO relay not initialized."
-        )
-    
-    try:
-        # Turn pump ON
-        relay_device.on()
-        print(f"✓ Water pump turned ON manually via /api/spray/start")
-        return {
-            "success": True,
-            "message": "Water pump started",
-            "pump_status": "ON"
-        }
-    except Exception as e:
-        print(f"Error starting pump: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start water pump: {str(e)}")
-
-@app.post("/api/spray/stop")
-async def stop_spray():
-    """
-    Turn OFF water pump/spray manually from frontend button.
-    Also called automatically after 3 seconds when disease is detected.
-    """
-    global relay_device
-    
-    if relay_device is None:
-        raise HTTPException(
-            status_code=503, 
-            detail="Water pump not available. GPIO relay not initialized."
-        )
-    
-    try:
-        # Turn pump OFF
-        relay_device.off()
-        print(f"✓ Water pump turned OFF via /api/spray/stop")
-        return {
-            "success": True,
-            "message": "Water pump stopped",
-            "pump_status": "OFF"
-        }
-    except Exception as e:
-        print(f"Error stopping pump: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to stop water pump: {str(e)}")
-
-@app.get("/api/spray/status")
-async def spray_status():
-    """Check water pump status"""
-    global relay_device
-    
-    if relay_device is None:
-        return {
-            "available": False,
-            "pump_status": "unavailable"
-        }
-    
-    try:
-        # For active-LOW relay: value=0 means ON, value=1 means OFF
-        relay_value = relay_device.value
-        is_on = relay_value == 0  # Active-LOW: 0 = ON
-        
-        return {
-            "available": True,
-            "pump_status": "ON" if is_on else "OFF"
-        }
-    except Exception as e:
-        return {
-            "available": False,
-            "pump_status": "unknown",
-            "error": str(e)
-        }
 
 # ============================================
 # Camera Endpoints
 # ============================================
 
 def convert_frame_to_rgb(frame):
-    """Convert camera frame to RGB format - handles all cases including grayscale
-    CRITICAL: Proper color handling for accurate leaf disease detection
-    """
+    """Convert camera frame to RGB format - handles all cases including grayscale"""
     # Handle grayscale images (1 channel or 2D array)
     if len(frame.shape) == 2 or (len(frame.shape) == 3 and frame.shape[2] == 1):
-        # Convert grayscale to RGB by stacking
         if len(frame.shape) == 3:
             gray = frame[:, :, 0]
         else:
@@ -707,14 +512,7 @@ def convert_frame_to_rgb(frame):
         return rgb_frame
     
     # Handle RGBA/BGRA (4 channels) - convert to RGB
-    # CRITICAL: On Pi 5 with picamera2, XBGR8888 is stored as BGRA (Blue, Green, Red, Alpha)
     elif len(frame.shape) == 3 and frame.shape[2] == 4:
-        # Check if it's BGRx format (picamera2 on Pi 5 often uses XBGR8888)
-        # XBGR8888 format: X=BGRA where X is unused, B=Blue, G=Green, R=Red
-        # So channel 0=X, 1=G, 2=B, 3=A (or similar)
-        # We need to extract RGB correctly
-        
-        # Try RGB extraction (standard)
         rgb_frame = np.zeros((frame.shape[0], frame.shape[1], 3), dtype=np.uint8)
         rgb_frame[:, :, 0] = frame[:, :, 2]  # R from channel 2
         rgb_frame[:, :, 1] = frame[:, :, 1]  # G from channel 1
@@ -728,13 +526,14 @@ def convert_frame_to_rgb(frame):
     # Fallback - convert to RGB
     else:
         if len(frame.shape) == 3:
-            frame = frame[:, :, :3]  # Take first 3 channels
+            frame = frame[:, :, :3]
         if len(frame.shape) == 3:
             return frame
         else:
             gray = frame.flatten()
             rgb = np.stack([gray, gray, gray], axis=1)
             return rgb.reshape(frame.shape[0], frame.shape[1], 3)
+
 
 def process_frame(frame):
     """Apply minimal post-processing for natural color output"""
@@ -748,10 +547,8 @@ def process_frame(frame):
         enhancer = ImageEnhance.Brightness(image)
         image = enhancer.enhance(1.3)
     
-    # NO color channel manipulation - preserve natural colors for accurate disease detection
-    # This ensures the disease spots/colors are accurately represented for the model
-    
     return np.array(image)
+
 
 def camera_capture_thread():
     """Background thread that continuously captures frames when streaming"""
@@ -766,16 +563,13 @@ def camera_capture_thread():
                         frame = request.make_array("main")
                         request.release()
                         
-                        # Process frame
                         rgb_frame = process_frame(frame)
                         
-                        # Convert to JPEG
                         image = Image.fromarray(rgb_frame, 'RGB')
                         img_bytes = io.BytesIO()
                         image.save(img_bytes, format='JPEG', quality=85)
                         img_bytes.seek(0)
                         
-                        # Update frame (no lock needed for simple assignment)
                         frame_data = img_bytes.getvalue()
                         current_frame = frame_data
                 time.sleep(0.033)  # ~30 FPS
@@ -787,10 +581,12 @@ def camera_capture_thread():
         else:
             time.sleep(0.1)
 
+
 # Start camera capture thread
 if PICAMERA2_AVAILABLE:
     camera_thread = threading.Thread(target=camera_capture_thread, daemon=True)
     camera_thread.start()
+
 
 @app.post("/api/camera/start")
 async def start_camera():
@@ -803,7 +599,6 @@ async def start_camera():
     try:
         with camera_lock:
             if camera is None:
-                # Check if any camera is detected before opening (avoids IndexError when no camera)
                 try:
                     cam_info = Picamera2.global_camera_info()
                 except Exception:
@@ -815,8 +610,6 @@ async def start_camera():
                     )
                 camera = Picamera2(camera_num=0)
 
-                # Configure camera for COLOR output (fixes black & white issue)
-                # CRITICAL: Use RGB888 format for proper leaf color detection
                 config = None
                 for format_attempt in ["RGB888", "BGR888", "XRGB8888", "XBGR8888"]:
                     try:
@@ -831,19 +624,15 @@ async def start_camera():
                         print(f"   Trying {format_attempt}: {e}")
                         continue
                 
-                # If all format attempts failed, use default
                 if config is None:
                     config = camera.create_preview_configuration(main={"size": (640, 480)})
                     camera.configure(config)
                     print("   ⚠ Using default camera configuration")
                 
-                # Set camera controls for optimal leaf imaging
                 try:
                     camera.set_controls({
-                        "AwbEnable": True,      # Auto white balance - critical for natural leaf colors
-                        "AeEnable": True,       # Auto exposure - ensures proper brightness
-                        # Don't force ExposureTime or AnalogueGain - let auto exposure handle it
-                        # This matches old picamera behavior where iso=0 (auto) was default
+                        "AwbEnable": True,
+                        "AeEnable": True,
                     })
                     print("   ✓ Camera controls set (auto white balance, auto exposure)")
                 except:
@@ -851,16 +640,14 @@ async def start_camera():
                 
                 camera.start()
                 
-                # Warm up camera
                 for i in range(5):
                     test_request = camera.capture_request()
                     test_request.release()
                     time.sleep(0.3)
             
             camera_streaming = True
-            # Reset frame buffer - wait a moment for first frame
             current_frame = None
-            time.sleep(0.5)  # Give camera time to start capturing
+            time.sleep(0.5)
         
         return {"success": True, "message": "Camera started"}
     
@@ -876,6 +663,7 @@ async def start_camera():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to start camera: {str(e)}")
 
+
 @app.get("/api/camera/stream")
 async def camera_stream():
     """MJPEG stream endpoint for live video"""
@@ -887,7 +675,6 @@ async def camera_stream():
     def generate_frames():
         frame_count = 0
         while camera_streaming:
-            # Wait for frame to be available (with timeout)
             wait_count = 0
             while current_frame is None and camera_streaming and wait_count < 100:
                 time.sleep(0.01)
@@ -902,10 +689,9 @@ async def camera_stream():
                     print(f"Error yielding frame: {e}")
                     break
             else:
-                # If no frame available, wait a bit longer
                 time.sleep(0.1)
             
-            time.sleep(0.033)  # ~30 FPS
+            time.sleep(0.033)
     
     return StreamingResponse(
         generate_frames(),
@@ -914,9 +700,10 @@ async def camera_stream():
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Pragma": "no-cache",
             "Expires": "0",
-            "X-Accel-Buffering": "no"  # Disable buffering for nginx if used
+            "X-Accel-Buffering": "no"
         }
     )
+
 
 @app.post("/api/camera/capture")
 async def capture_image():
@@ -931,52 +718,37 @@ async def capture_image():
             if camera is None:
                 raise HTTPException(status_code=400, detail="Camera not initialized")
             
-            # CRITICAL FIX: Capture FRESH frame directly from camera
-            # Don't use cached current_frame - it may be corrupted or wrong format
             request = camera.capture_request()
             frame = request.make_array("main")
             request.release()
             
-            # Process frame immediately with proper color handling
             rgb_frame = convert_frame_to_rgb(frame)
             
-            # Apply brightness/contrast optimization for leaf detection
             image = Image.fromarray(rgb_frame, 'RGB')
-            
-            # Enhance for better leaf visibility (matching training conditions)
             mean_brightness = np.array(image).mean()
             
-            # If image is too dark or too bright, adjust it
             if mean_brightness < 50:
-                # Boost brightness if too dark
                 enhancer = ImageEnhance.Brightness(image)
                 image = enhancer.enhance(1.3)
             elif mean_brightness > 220:
-                # Reduce brightness if too washed out
                 enhancer = ImageEnhance.Brightness(image)
                 image = enhancer.enhance(0.85)
             
-            # Enhance contrast for better leaf spot visibility
             enhancer = ImageEnhance.Contrast(image)
             image = enhancer.enhance(1.15)
             
-            # Convert back to numpy for final processing
             processed_frame = np.array(image)
             
-            # Verify image quality
             final_brightness = processed_frame.mean()
             if final_brightness < 40:
-                # Still too dark - apply more aggressive correction
                 image = Image.fromarray(processed_frame, 'RGB')
                 enhancer = ImageEnhance.Brightness(image)
                 image = enhancer.enhance(1.5)
                 processed_frame = np.array(image)
             
-            # Stop streaming
             camera_streaming = False
             current_frame = None
             
-            # Convert to JPEG with high quality
             img_bytes = io.BytesIO()
             save_image = Image.fromarray(processed_frame, 'RGB')
             save_image.save(img_bytes, format='JPEG', quality=95)
@@ -985,7 +757,6 @@ async def capture_image():
             
             print(f"✓ Fresh frame captured (brightness: {final_brightness:.1f}, size: {len(frame_data)} bytes)")
             
-            # Return captured frame as JPEG
             return Response(
                 content=frame_data,
                 media_type="image/jpeg",
@@ -996,6 +767,7 @@ async def capture_image():
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Failed to capture image: {str(e)}")
+
 
 @app.post("/api/camera/stop")
 async def stop_camera():
@@ -1017,6 +789,8 @@ async def stop_camera():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to stop camera: {str(e)}")
 
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
