@@ -603,6 +603,92 @@ async def servo_control(action: str):
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
 
 # ============================================
+# Water Pump / Spray Control Endpoints
+# ============================================
+
+@app.post("/api/spray/start")
+async def start_spray():
+    """
+    Turn ON water pump/spray manually from frontend button.
+    Pump will stay ON until /api/spray/stop is called.
+    Relay is OFF by default when app starts.
+    """
+    global relay_device
+    
+    if relay_device is None:
+        raise HTTPException(
+            status_code=503, 
+            detail="Water pump not available. GPIO relay not initialized."
+        )
+    
+    try:
+        # Turn pump ON
+        relay_device.on()
+        print(f"✓ Water pump turned ON manually via /api/spray/start")
+        return {
+            "success": True,
+            "message": "Water pump started",
+            "pump_status": "ON"
+        }
+    except Exception as e:
+        print(f"Error starting pump: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start water pump: {str(e)}")
+
+@app.post("/api/spray/stop")
+async def stop_spray():
+    """
+    Turn OFF water pump/spray manually from frontend button.
+    Also called automatically after 3 seconds when disease is detected.
+    """
+    global relay_device
+    
+    if relay_device is None:
+        raise HTTPException(
+            status_code=503, 
+            detail="Water pump not available. GPIO relay not initialized."
+        )
+    
+    try:
+        # Turn pump OFF
+        relay_device.off()
+        print(f"✓ Water pump turned OFF via /api/spray/stop")
+        return {
+            "success": True,
+            "message": "Water pump stopped",
+            "pump_status": "OFF"
+        }
+    except Exception as e:
+        print(f"Error stopping pump: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop water pump: {str(e)}")
+
+@app.get("/api/spray/status")
+async def spray_status():
+    """Check water pump status"""
+    global relay_device
+    
+    if relay_device is None:
+        return {
+            "available": False,
+            "pump_status": "unavailable"
+        }
+    
+    try:
+        # For active-LOW relay: value=0 means ON, value=1 means OFF
+        relay_value = relay_device.value
+        is_on = relay_value == 0  # Active-LOW: 0 = ON
+        
+        return {
+            "available": True,
+            "pump_status": "ON" if is_on else "OFF"
+        }
+    except Exception as e:
+        return {
+            "available": False,
+            "pump_status": "unknown",
+            "error": str(e)
+        }
+
+# ============================================
 # Camera Endpoints
 # ============================================
 
