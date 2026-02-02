@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 
@@ -9,8 +10,6 @@ function DiseaseDetection() {
   const [error, setError] = useState(null)
   const [cameraActive, setCameraActive] = useState(false)
   const [capturing, setCapturing] = useState(false)
-  const [sprayRunning, setSprayRunning] = useState(false)
-  const [sprayLoading, setSprayLoading] = useState(false)
   const videoRef = useRef(null)
   const streamIntervalRef = useRef(null)
 
@@ -37,8 +36,6 @@ function DiseaseDetection() {
         setPreview(null)
         setSelectedImage(null)
         setResult(null)
-        
-        // Stream URL will be set by useEffect when cameraActive changes
       }
     } catch (err) {
       console.error('Error starting camera:', err)
@@ -70,34 +67,26 @@ function DiseaseDetection() {
         responseType: 'blob'
       })
       
-      // Verify blob is valid
       if (!response.data || response.data.size === 0) {
         throw new Error('Received empty image data')
       }
       
-      // Convert blob to file
       const blob = response.data
       const file = new File([blob], 'captured.jpg', { type: 'image/jpeg' })
-      
-      // Create preview URL
       const previewUrl = URL.createObjectURL(blob)
       
-      // Stop camera first
       setCameraActive(false)
       
-      // Stop video stream
       if (videoRef.current) {
         videoRef.current.src = ''
       }
       
-      // Stop camera on backend
       try {
         await axios.post('/api/camera/stop')
       } catch (stopErr) {
         console.warn('Error stopping camera:', stopErr)
       }
       
-      // Set preview after a small delay to ensure UI updates
       setTimeout(() => {
         setSelectedImage(file)
         setPreview(previewUrl)
@@ -116,12 +105,8 @@ function DiseaseDetection() {
     }
   }
 
-  // Handle stream URL updates when camera becomes active
   useEffect(() => {
     if (cameraActive && videoRef.current) {
-      console.log('Starting MJPEG camera stream')
-      // Use the MJPEG stream endpoint directly as the image src
-      // This is more efficient than polling and works with the backend's /api/camera/stream endpoint
       const apiUrl = import.meta.env.VITE_API_URL || ''
       videoRef.current.src = `${apiUrl}/api/camera/stream`
     } else if (!cameraActive && videoRef.current) {
@@ -133,19 +118,16 @@ function DiseaseDetection() {
     }
   }, [cameraActive])
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (cameraActive) {
         stopCamera()
       }
-      // Clean up preview URLs
       if (preview) {
         URL.revokeObjectURL(preview)
       }
     }
   }, [])
-
 
   const detectDisease = async () => {
     if (!selectedImage) {
@@ -168,10 +150,6 @@ function DiseaseDetection() {
       })
 
       setResult(response.data)
-      // If new disease detected while spray is running, stop the spray
-      if (sprayRunning) {
-        setSprayRunning(false)
-      }
     } catch (err) {
       console.error('Error detecting disease:', err)
       setError(err.response?.data?.detail || 'Failed to detect disease. Please try again.')
@@ -180,57 +158,12 @@ function DiseaseDetection() {
     }
   }
 
-  const startSpray = async () => {
-    // Check if a disease is detected (not healthy and not "not a leaf")
-    if (!result || result.is_healthy || result.is_not_a_leaf) {
-      setError('Please detect a disease first before starting the pump.')
-      return
-    }
-
-    setSprayLoading(true)
-    setError(null)
-
-    try {
-      const response = await axios.post('/api/spray/start')
-      if (response.data.success) {
-        setSprayRunning(true)
-        setError(null)
-      }
-    } catch (err) {
-      console.error('Error starting spray:', err)
-      setError(err.response?.data?.detail || 'Failed to start pump. Please try again.')
-    } finally {
-      setSprayLoading(false)
-    }
-  }
-
-  const stopSpray = async () => {
-    setSprayLoading(true)
-    setError(null)
-
-    try {
-      const response = await axios.post('/api/spray/stop')
-      if (response.data.success) {
-        setSprayRunning(false)
-        setError(null)
-      }
-    } catch (err) {
-      console.error('Error stopping spray:', err)
-      setError(err.response?.data?.detail || 'Failed to stop dispenser. Please try again.')
-    } finally {
-      setSprayLoading(false)
-    }
-  }
-
   return (
     <div className="space-y-6">
-      {/* Image Upload Section */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Upload Section */}
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-gray-700">Image Input</h3>
           
-          {/* Camera Controls */}
           <div className="flex gap-2">
             {!cameraActive ? (
               <button
@@ -259,7 +192,6 @@ function DiseaseDetection() {
             )}
           </div>
 
-          {/* Live Camera Stream or Preview */}
           {cameraActive ? (
             <div className="border-2 border-blue-400 rounded-lg overflow-hidden bg-black min-h-[300px] flex items-center justify-center relative">
               <img
@@ -333,7 +265,6 @@ function DiseaseDetection() {
             </div>
           )}
 
-          {/* Detect Button */}
           {preview && (
             <button
               onClick={detectDisease}
@@ -354,7 +285,6 @@ function DiseaseDetection() {
           )}
         </div>
 
-        {/* Results Section */}
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-gray-700">Detection Results</h3>
           
@@ -374,7 +304,6 @@ function DiseaseDetection() {
 
           {result && (
             <div className="space-y-4">
-              {/* Main Result */}
               <div className={`p-6 rounded-lg border-2 ${
                 result.is_healthy || result.is_not_a_leaf
                   ? 'bg-green-50 border-green-300'
@@ -399,56 +328,18 @@ function DiseaseDetection() {
                 </div>
               </div>
 
-              {/* Spray Control Buttons - Always visible for manual control */}
+              {/* Pump Status - Automatic */}
               <div className="space-y-3">
-                <div className="flex gap-2">
-                  {!sprayRunning ? (
-                    <button
-                      onClick={startSpray}
-                      disabled={sprayLoading}
-                      className="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                    >
-                      {sprayLoading ? (
-                        <>
-                          <span className="animate-spin">⏳</span>
-                          Starting...
-                        </>
-                      ) : (
-                        <>
-                          💧 Start Pump
-                        </>
-                      )}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={stopSpray}
-                      disabled={sprayLoading}
-                      className="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                    >
-                      {sprayLoading ? (
-                        <>
-                          <span className="animate-spin">⏳</span>
-                          Stopping...
-                        </>
-                      ) : (
-                        <>
-                          ⏹️ Stop Pump
-                        </>
-                      )}
-                    </button>
-                  )}
-                </div>
-                {sprayRunning && (
-                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <p className="text-sm text-blue-700 font-medium">
-                      💧 Pump is running. Click "Stop Pump" to stop.
+                {result.is_healthy || result.is_not_a_leaf ? (
+                  <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                    <p className="text-green-700 font-medium flex items-center gap-2">
+                      ✅ No spray needed - Healthy leaf or not a leaf
                     </p>
                   </div>
-                )}
-                {result && !result.is_healthy && !result.is_not_a_leaf && (
-                  <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <p className="text-sm text-yellow-700 font-medium">
-                      ⚠️ Disease detected! Pump will automatically run for 3 seconds after detection.
+                ) : (
+                  <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <p className="text-yellow-700 font-medium flex items-center gap-2">
+                      ⚠️ Disease detected! Pump will automatically spray for 3 seconds.
                     </p>
                   </div>
                 )}
