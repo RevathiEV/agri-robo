@@ -16,6 +16,10 @@ import threading
 import time
 import serial
 
+from gpiozero import LED
+LED(18).off()
+
+
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
     sys.path.insert(0, '/usr/lib/python3/dist-packages')
@@ -56,7 +60,7 @@ def initialize_relay():
     try:
         # Create LED object with active_high=False for active-LOW relay
         # IMPORTANT: Create it and IMMEDIATELY turn it OFF
-        relay = LED(RELAY_GPIO_PIN, active_high=False)
+        relay = LED(RELAY_GPIO_PIN, active_high=True)
         relay.off()  # Ensure relay is OFF at startup (HIGH signal for active-LOW)
         print(f"✓ Relay initialized on GPIO {RELAY_GPIO_PIN} (Physical Pin 12)")
         print("✓ Relay is OFF at startup (will only turn ON for 3 seconds when disease is detected)")
