@@ -190,6 +190,15 @@ serial_connection = None
 # Global variable for relay (water pump) - initialized in lifespan
 relay = None
 
+# HARD SAFETY: always keep relay OFF at import time
+try:
+    from gpiozero import LED
+    _temp = LED(RELAY_GPIO_PIN, active_high=False)
+    _temp.off()
+    _temp.close()
+except:
+    pass
+
 
 def load_model_and_mapping():
     """Load the disease detection model and class mapping - TensorFlow 2.20.0 compatible"""
@@ -300,13 +309,24 @@ async def health_check():
 async def detect_disease(file: UploadFile = File(...)):
     """
     Detect disease from uploaded image using the trained CNN model.
-    The model automatically detects the required input size (128x128 or 224x224).
-    
-    Relay ONLY turns ON for 3 seconds when:
-    - Disease is NOT healthy
-    - Disease is NOT Not_A_Leaf
     """
+
     global relay
+
+    # Safety: ensure pump is OFF before doing anything
+    if relay is not None:
+        try:
+            relay.off()
+        except:
+            pass
+
+    if model is None or class_mapping is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not loaded. Please ensure model files (tomato_disease_model.h5 and class_mapping.json) are available in the project root."
+        )
+
+
     
     if model is None or class_mapping is None:
         raise HTTPException(
