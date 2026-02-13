@@ -16,6 +16,50 @@ import threading
 import time
 import serial
 
+# Try to import gpiozero for relay control (water pump) - Raspberry Pi only
+try:
+    from gpiozero import LED
+    GPIOZERO_AVAILABLE = True
+except ImportError:
+    GPIOZERO_AVAILABLE = False
+    LED = None
+    print("Warning: gpiozero not available. Water pump control will be disabled.")
+
+# GPIO pin for relay (water pump) - Pin 12 = GPIO 18
+RELAY_GPIO_PIN = 18
+relay = None
+
+def initialize_relay():
+    """Initialize relay at startup - relay stays OFF until disease is detected."""
+    global relay
+    if not GPIOZERO_AVAILABLE:
+        relay = None
+        return False
+    try:
+        relay = LED(RELAY_GPIO_PIN, active_high=True)
+        relay.off()
+        print("✓ Water pump relay initialized - OFF at startup (will activate only when disease detected)")
+        return True
+    except Exception as e:
+        print(f"Warning: Could not initialize relay: {e}. Water pump disabled.")
+        relay = None
+        return False
+
+def activate_pump_for_duration(seconds=3):
+    """Turn pump ON for specified duration, then OFF. Runs in background thread."""
+    global relay
+    if relay is None:
+        return
+    def run():
+        try:
+            relay.on()
+            print(f"✓ Disease detected - Water pump ON for {seconds}s")
+            time.sleep(seconds)
+        finally:
+            relay.off()
+            print("✓ Water pump OFF")
+    threading.Thread(target=run, daemon=True).start()
+
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
     sys.path.insert(0, '/usr/lib/python3/dist-packages')
@@ -31,7 +75,7 @@ except ImportError:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
-    global serial_connection
+    global serial_connection, relay
     
     # Startup
     try:
@@ -51,12 +95,25 @@ async def lifespan(app: FastAPI):
         print("Motor and servo control will not be available.")
         serial_connection = None
     
+    # Initialize water pump relay - stays OFF until disease detected
+    initialize_relay()
+    if relay is not None:
+        relay.off()
+    
     yield
     
     # Shutdown - cleanup
     if serial_connection and serial_connection.is_open:
         serial_connection.close()
         print("Bluetooth serial connection closed")
+    
+    if relay is not None:
+        try:
+            relay.off()
+            relay.close()
+            print("✓ Water pump relay cleaned up on shutdown")
+        except Exception as e:
+            print(f"Warning: Error during relay cleanup: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
@@ -293,6 +350,16 @@ async def detect_disease(file: UploadFile = File(...)):
         
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
+        
+        # Water pump: OFF for healthy/Not_A_Leaf, ON for 3s only when disease detected
+        if not is_healthy and not is_not_a_leaf:
+            activate_pump_for_duration(3)
+        else:
+            if relay is not None:
+                try:
+                    relay.off()
+                except Exception:
+                    pass
         
         return JSONResponse({
             "success": True,
