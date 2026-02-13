@@ -14,7 +14,6 @@ from typing import Optional
 import sys
 import threading
 import time
-import serial
 
 # Try to import gpiozero for relay control (water pump) - Raspberry Pi only
 try:
@@ -36,7 +35,8 @@ def initialize_relay():
         relay = None
         return False
     try:
-        relay = LED(RELAY_GPIO_PIN, active_high=True)
+        # active_high=False for active-LOW relay (LOW=ON, HIGH=OFF) - common relay modules
+        relay = LED(RELAY_GPIO_PIN, active_high=False)
         relay.off()
         print("✓ Water pump relay initialized - OFF at startup (will activate only when disease detected)")
         return True
@@ -75,7 +75,7 @@ except ImportError:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
-    global serial_connection, relay
+    global relay
     
     # Startup
     try:
@@ -86,15 +86,6 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
         print("API will start but disease detection will not work until model is available.")
     
-    # Initialize serial connection to Bluetooth device
-    try:
-        serial_connection = serial.Serial('/dev/rfcomm0', 9600, timeout=1)
-        print("Bluetooth serial connection established to /dev/rfcomm0")
-    except Exception as e:
-        print(f"Warning: Could not connect to /dev/rfcomm0: {e}")
-        print("Motor and servo control will not be available.")
-        serial_connection = None
-    
     # Initialize water pump relay - stays OFF until disease detected
     initialize_relay()
     if relay is not None:
@@ -103,10 +94,6 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown - cleanup
-    if serial_connection and serial_connection.is_open:
-        serial_connection.close()
-        print("Bluetooth serial connection closed")
-    
     if relay is not None:
         try:
             relay.off()
