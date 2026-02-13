@@ -16,10 +16,6 @@ import threading
 import time
 import serial
 
-from gpiozero import LED
-LED(18).off()
-
-
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
     sys.path.insert(0, '/usr/lib/python3/dist-packages')
@@ -32,89 +28,10 @@ except ImportError:
     PICAMERA2_AVAILABLE = False
     print("Warning: picamera2 not available. Camera features will be disabled.")
 
-# Try to import gpiozero for relay control (water pump)
-try:
-    from gpiozero import LED
-    GPIOZERO_AVAILABLE = True
-except ImportError:
-    GPIOZERO_AVAILABLE = False
-    print("Warning: gpiozero not available. Motor control via GPIO will be disabled.")
-    LED = None
-
-# GPIO pin for relay control (Pin 12 = GPIO 18)
-RELAY_GPIO_PIN = 18  # GPIO 18 (Physical Pin 12)
-
-# Initialize relay using gpiozero LED class
-# For active-LOW relay (SRD-05VDC-SL-C): LOW signal = relay ON, HIGH signal = relay OFF
-relay = None
-
-def initialize_relay():
-    """Initialize relay at startup - MUST be called before using relay"""
-    global relay
-    
-    if not GPIOZERO_AVAILABLE:
-        print("gpiozero not available - Motor control via GPIO disabled")
-        relay = None
-        return False
-    
-    try:
-        # Create LED object with active_high=False for active-LOW relay
-        # IMPORTANT: Create it and IMMEDIATELY turn it OFF
-        relay = LED(RELAY_GPIO_PIN, active_high=True)
-        relay.off()  # Ensure relay is OFF at startup (HIGH signal for active-LOW)
-        print(f"✓ Relay initialized on GPIO {RELAY_GPIO_PIN} (Physical Pin 12)")
-        print("✓ Relay is OFF at startup (will only turn ON for 3 seconds when disease is detected)")
-        return True
-    except Exception as e:
-        error_msg = str(e)
-        if "GPIO busy" in error_msg or "busy" in error_msg.lower():
-            print(f"ERROR: GPIO Pin {RELAY_GPIO_PIN} is busy (likely from a previous instance)")
-            print("SOLUTION: Please run the following commands to clean up:")
-            print(f"  1. Find the process: sudo lsof | grep gpio")
-            print(f"  2. Kill any Python processes using GPIO: pkill -f 'python.*main.py'")
-            print(f"  3. Wait 2-3 seconds, then restart the application")
-        else:
-            print(f"Warning: Could not initialize GPIO: {e}")
-        print("Motor control via GPIO will not be available.")
-        relay = None
-        return False
-
-def activate_motor_for_duration(seconds=3):
-    """
-    Turn relay ON for specified duration, then turn OFF automatically.
-    Runs in a background thread to avoid blocking the API response.
-    
-    Relay only activates when disease is detected (NOT healthy, NOT Not_A_Leaf).
-    """
-    global relay
-    
-    if relay is None:
-        print("Warning: Relay not available - cannot activate motor")
-        return
-    
-    def run():
-        try:
-            relay.on()  # Turn relay ON
-            print(f"✓ Water pump activated (disease detected) - will turn OFF in {seconds}s")
-            time.sleep(seconds)
-            relay.off()  # Turn relay OFF
-            print(f"✓ Water pump deactivated after {seconds}s")
-        except Exception as e:
-            print(f"ERROR controlling motor: {e}")
-            # Ensure motor is turned OFF on error
-            try:
-                relay.off()
-                print("✓ Water pump forced OFF due to error")
-            except:
-                pass
-    
-    # Start in background thread (non-blocking)
-    threading.Thread(target=run, daemon=True).start()
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
-    global serial_connection, relay
+    global serial_connection
     
     # Startup
     try:
@@ -134,29 +51,12 @@ async def lifespan(app: FastAPI):
         print("Motor and servo control will not be available.")
         serial_connection = None
     
-    # Initialize relay - MUST be OFF at startup
-    initialize_relay()
-    
-    # Ensure relay is OFF after initialization (safety check)
-    if relay is not None:
-        relay.off()
-        print("✓ Final safety check: Relay confirmed OFF")
-    
     yield
     
     # Shutdown - cleanup
     if serial_connection and serial_connection.is_open:
         serial_connection.close()
         print("Bluetooth serial connection closed")
-    
-    # Force relay OFF on shutdown
-    if relay is not None:
-        try:
-            relay.off()
-            relay.close()
-            print("✓ Shutdown: Relay turned OFF and cleaned up")
-        except Exception as e:
-            print(f"Warning: Error during GPIO cleanup: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
@@ -190,18 +90,6 @@ current_frame = None
 
 # Global variable for serial connection (Bluetooth)
 serial_connection = None
-
-# Global variable for relay (water pump) - initialized in lifespan
-relay = None
-
-# HARD SAFETY: always keep relay OFF at import time
-try:
-    from gpiozero import LED
-    _temp = LED(RELAY_GPIO_PIN, active_high=False)
-    _temp.off()
-    _temp.close()
-except:
-    pass
 
 
 def load_model_and_mapping():
@@ -314,16 +202,6 @@ async def detect_disease(file: UploadFile = File(...)):
     """
     Detect disease from uploaded image using the trained CNN model.
     """
-
-    global relay
-
-    # Safety: ensure pump is OFF before doing anything
-    if relay is not None:
-        try:
-            relay.off()
-        except:
-            pass
-
     if model is None or class_mapping is None:
         raise HTTPException(
             status_code=503,
@@ -415,22 +293,6 @@ async def detect_disease(file: UploadFile = File(...)):
         
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
-        
-        # Control relay: Turn ON ONLY if disease is detected (not healthy, not Not_A_Leaf)
-        # Relay should NEVER activate for healthy or Not_A_Leaf
-        if not is_healthy and not is_not_a_leaf:
-            # Disease detected - activate relay for 3 seconds
-            activate_motor_for_duration(3)
-            print(f"✓ Disease detected: {disease_name} - Water pump activated for 3 seconds")
-        else:
-            # Healthy or Not_A_Leaf - relay stays OFF
-            print(f"✓ Detection: {disease_name} - Water pump stays OFF (healthy or not a leaf)")
-            # Explicitly ensure relay is OFF (safety check)
-            if relay is not None:
-                try:
-                    relay.off()
-                except:
-                    pass
         
         return JSONResponse({
             "success": True,
