@@ -15,63 +15,55 @@ import sys
 import threading
 import time
 
-# Try to import gpiozero for relay control (water pump) - Raspberry Pi only
-try:
-    from gpiozero import LED
-    GPIOZERO_AVAILABLE = True
-except ImportError:
-    GPIOZERO_AVAILABLE = False
-    LED = None
-    print("Warning: gpiozero not available. Water pump control will be disabled.")
-
-# GPIO pin for relay (water pump) - Pin 12 = GPIO 18
+#
+# Water pump relay (GPIO)
+#
+# IMPORTANT:
+# - Keep pump OFF on startup (no automatic activation)
+# - Turn pump ON/OFF ONLY via /api/pump/start and /api/pump/stop
+#
+# Wiring reference: Relay IN -> GPIO18 (Physical Pin 12)
 RELAY_GPIO_PIN = 18
-# If your relay turns ON at startup, it is likely ACTIVE-HIGH.
-# ACTIVE-HIGH relay: HIGH=ON, LOW=OFF  -> set RELAY_ACTIVE_LOW = False
-# ACTIVE-LOW  relay: LOW=ON,  HIGH=OFF -> set RELAY_ACTIVE_LOW = True
-RELAY_ACTIVE_LOW = False
-relay = None
 
-def _force_gpio_relay_off_level():
-    """
-    Force the GPIO pin to the relay-OFF level before gpiozero initializes.
-    This prevents brief glitches / wrong default states at startup.
-    """
-    try:
-        import RPi.GPIO as GPIO  # type: ignore
-    except Exception:
-        return
-    try:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT)
-        # Relay OFF level:
-        # - active-LOW: OFF = HIGH
-        # - active-HIGH: OFF = LOW
-        off_level = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-        GPIO.output(RELAY_GPIO_PIN, off_level)
-    except Exception:
-        # If this fails we still rely on gpiozero init/off below.
-        pass
+# Most relay modules used in hobby projects are ACTIVE-LOW:
+#   LOW  = relay ON
+#   HIGH = relay OFF
+RELAY_ACTIVE_LOW = True
 
-def initialize_relay():
-    """Initialize relay at startup - relay stays OFF until user clicks Start Dispensing."""
-    global relay
-    if not GPIOZERO_AVAILABLE:
-        relay = None
+try:
+    import RPi.GPIO as GPIO  # type: ignore
+    RPI_GPIO_AVAILABLE = True
+except Exception:
+    GPIO = None
+    RPI_GPIO_AVAILABLE = False
+    print("Warning: RPi.GPIO not available. Water pump control will be disabled.")
+
+def _relay_off_level():
+    return GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+
+def _relay_on_level():
+    return GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
+
+def ensure_pump_off_startup():
+    """
+    Hard safety: drive GPIO to relay-OFF level immediately at import/startup.
+    No relay initialization objects, no background threads.
+    """
+    if not RPI_GPIO_AVAILABLE:
         return False
     try:
-        _force_gpio_relay_off_level()
-
-        # gpiozero polarity: active_high=True means GPIO HIGH => device ON
-        relay = LED(RELAY_GPIO_PIN, active_high=(not RELAY_ACTIVE_LOW), initial_value=False)
-        relay.off()  # hard safety: keep OFF at startup
-        relay_mode = "active-LOW" if RELAY_ACTIVE_LOW else "active-HIGH"
-        print(f"✓ Water pump relay initialized ({relay_mode}) - OFF at startup (only on when Start Dispensing is clicked)")
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=_relay_off_level())
+        GPIO.output(RELAY_GPIO_PIN, _relay_off_level())
+        print("✓ Water pump relay forced OFF at startup (manual control only)")
         return True
     except Exception as e:
-        print(f"Warning: Could not initialize relay: {e}. Water pump disabled.")
-        relay = None
+        print(f"Warning: Could not force pump OFF at startup: {e}")
         return False
+
+# Force OFF as early as possible
+ensure_pump_off_startup()
 
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
@@ -88,7 +80,6 @@ except ImportError:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events"""
-    global relay
     
     # Startup
     try:
@@ -99,21 +90,19 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
         print("API will start but disease detection will not work until model is available.")
     
-    # Initialize water pump relay - OFF at startup; only on when user clicks Start Dispensing
-    initialize_relay()
-    if relay is not None:
-        relay.off()
+    # Ensure pump is OFF at startup (manual control endpoints only)
+    ensure_pump_off_startup()
     
     yield
     
     # Shutdown - cleanup
-    if relay is not None:
+    # Keep pump OFF on shutdown as well (do not cleanup to avoid float/glitch)
+    if RPI_GPIO_AVAILABLE:
         try:
-            relay.off()
-            relay.close()
-            print("✓ Water pump relay cleaned up on shutdown")
+            GPIO.output(RELAY_GPIO_PIN, _relay_off_level())
+            print("✓ Shutdown: Water pump forced OFF")
         except Exception as e:
-            print(f"Warning: Error during relay cleanup: {e}")
+            print(f"Warning: Shutdown pump OFF failed: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
@@ -446,11 +435,13 @@ async def servo_control(action: str):
 @app.post("/api/pump/start")
 async def pump_start():
     """Turn water pump relay ON (Start Dispensing button)."""
-    global relay
-    if relay is None:
-        raise HTTPException(status_code=503, detail="Water pump relay not available")
+    if not RPI_GPIO_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Water pump GPIO not available")
     try:
-        relay.on()
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=_relay_off_level())
+        GPIO.output(RELAY_GPIO_PIN, _relay_on_level())
         return {"success": True, "message": "Pump ON (dispensing started)"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -459,11 +450,13 @@ async def pump_start():
 @app.post("/api/pump/stop")
 async def pump_stop():
     """Turn water pump relay OFF (Stop Dispensing button)."""
-    global relay
-    if relay is None:
-        raise HTTPException(status_code=503, detail="Water pump relay not available")
+    if not RPI_GPIO_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Water pump GPIO not available")
     try:
-        relay.off()
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=_relay_off_level())
+        GPIO.output(RELAY_GPIO_PIN, _relay_off_level())
         return {"success": True, "message": "Pump OFF (dispensing stopped)"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
