@@ -2,7 +2,7 @@
 """
 Standalone water pump test script.
 Run this to verify the pump/relay hardware works - pump turns ON for 3 seconds, then OFF.
-Uses same GPIO 18 / active-LOW relay config as main.py.
+Uses same GPIO 18 relay config as main.py.
 """
 import time
 
@@ -14,11 +14,12 @@ except ImportError:
     exit(1)
 
 RELAY_GPIO_PIN = 18  # GPIO 18 = Physical Pin 12 (same as main.py)
-RELAY_ACTIVE_LOW = True  # active_high=False in gpiozero = active-LOW relay
+# Match backend/main.py
+RELAY_ACTIVE_LOW = False  # active-high relay (HIGH=ON, LOW=OFF)
 
 def main():
     print("Water pump test - ON for 3 seconds, then OFF")
-    print("Using GPIO 18 (Physical Pin 12), active-LOW relay")
+    print(f"Using GPIO 18 (Physical Pin 12), relay is {'active-LOW' if RELAY_ACTIVE_LOW else 'active-HIGH'}")
     print()
 
     try:
