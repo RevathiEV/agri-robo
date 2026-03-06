@@ -328,18 +328,18 @@ function DiseaseDetection() {
                 </div>
               </div>
 
-              {/* Pump Status - Automatic */}
+              {/* Pump - manual only via Start/Stop Dispensing */}
               <div className="space-y-3">
                 {result.is_healthy || result.is_not_a_leaf ? (
                   <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
                     <p className="text-green-700 font-medium flex items-center gap-2">
-                      ✅ No spray needed - Healthy leaf or not a leaf
+                      ✅ Healthy leaf or not a leaf — no spray needed
                     </p>
                   </div>
                 ) : (
                   <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                     <p className="text-yellow-700 font-medium flex items-center gap-2">
-                      ⚠️ Disease detected! Pump will automatically spray for 3 seconds.
+                      ⚠️ Disease detected. Use Start / Stop Dispensing to control the pump.
                     </p>
                   </div>
                 )}

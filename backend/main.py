@@ -29,7 +29,7 @@ RELAY_GPIO_PIN = 18
 relay = None
 
 def initialize_relay():
-    """Initialize relay at startup - relay stays OFF until disease is detected."""
+    """Initialize relay at startup - relay stays OFF until user clicks Start Dispensing."""
     global relay
     if not GPIOZERO_AVAILABLE:
         relay = None
@@ -38,27 +38,12 @@ def initialize_relay():
         # active_high=False for active-LOW relay (LOW=ON, HIGH=OFF) - common relay modules
         relay = LED(RELAY_GPIO_PIN, active_high=False)
         relay.off()
-        print("✓ Water pump relay initialized - OFF at startup (will activate only when disease detected)")
+        print("✓ Water pump relay initialized - OFF at startup (only on when Start Dispensing is clicked)")
         return True
     except Exception as e:
         print(f"Warning: Could not initialize relay: {e}. Water pump disabled.")
         relay = None
         return False
-
-def activate_pump_for_duration(seconds=3):
-    """Turn pump ON for specified duration, then OFF. Runs in background thread."""
-    global relay
-    if relay is None:
-        return
-    def run():
-        try:
-            relay.on()
-            print(f"✓ Disease detected - Water pump ON for {seconds}s")
-            time.sleep(seconds)
-        finally:
-            relay.off()
-            print("✓ Water pump OFF")
-    threading.Thread(target=run, daemon=True).start()
 
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
@@ -86,7 +71,7 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
         print("API will start but disease detection will not work until model is available.")
     
-    # Initialize water pump relay - stays OFF until disease detected
+    # Initialize water pump relay - OFF at startup; only on when user clicks Start Dispensing
     initialize_relay()
     if relay is not None:
         relay.off()
@@ -338,16 +323,6 @@ async def detect_disease(file: UploadFile = File(...)):
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
         
-        # Water pump: OFF for healthy/Not_A_Leaf, ON for 3s only when disease detected
-        if not is_healthy and not is_not_a_leaf:
-            activate_pump_for_duration(3)
-        else:
-            if relay is not None:
-                try:
-                    relay.off()
-                except Exception:
-                    pass
-        
         return JSONResponse({
             "success": True,
             "disease": formatted_disease,
@@ -434,6 +409,36 @@ async def servo_control(action: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
+
+
+# ============================================
+# Water pump (relay) - Start / Stop Dispensing buttons
+# ============================================
+
+@app.post("/api/pump/start")
+async def pump_start():
+    """Turn water pump relay ON (Start Dispensing button)."""
+    global relay
+    if relay is None:
+        raise HTTPException(status_code=503, detail="Water pump relay not available")
+    try:
+        relay.on()
+        return {"success": True, "message": "Pump ON (dispensing started)"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pump/stop")
+async def pump_stop():
+    """Turn water pump relay OFF (Stop Dispensing button)."""
+    global relay
+    if relay is None:
+        raise HTTPException(status_code=503, detail="Water pump relay not available")
+    try:
+        relay.off()
+        return {"success": True, "message": "Pump OFF (dispensing stopped)"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================

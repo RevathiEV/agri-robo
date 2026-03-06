@@ -7,23 +7,22 @@ function ServoControl() {
 
   const handleServoControl = async (action) => {
     try {
-      const response = await axios.post('/api/servo/control', null, {
-        params: { action }
-      })
-      console.log('Servo control response:', response.data)
+      const endpoint = action === 'start' ? '/api/pump/start' : '/api/pump/stop'
+      const response = await axios.post(endpoint)
+      console.log('Pump control response:', response.data)
       
       setIsRunning(action === 'start')
       setStatus(action === 'start' ? 'Running' : 'Stopped')
     } catch (error) {
-      console.error('Error controlling servo:', error)
-      alert(`Servo control error: ${error.message}`)
+      console.error('Error controlling pump:', error)
+      alert(`Pump control error: ${error.response?.data?.detail || error.message}`)
     }
   }
 
   return (
     <div className="space-y-4">
       <p className="text-gray-600 mb-4">
-        Control the fertilizer dispensing servo motor
+        Control the water pump (Start / Stop dispensing)
       </p>
       
       {/* Status Display */}
@@ -59,13 +58,7 @@ function ServoControl() {
       {/* Info */}
       <div className="mt-4 p-3 bg-blue-50 rounded-lg">
         <p className="text-sm text-blue-700">
-          💡 The servo motor will control the fertilizer dispensing mechanism
-        </p>
-      </div>
-
-      <div className="mt-2 p-3 bg-yellow-50 rounded-lg">
-        <p className="text-xs text-yellow-700">
-          ⚠️ Note: GPIO control will be implemented when Raspberry Pi is connected
+          💡 Start Dispensing turns the pump ON; Stop Dispensing turns it OFF. No automatic spraying.
         </p>
       </div>
     </div>
