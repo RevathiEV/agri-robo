@@ -26,7 +26,32 @@ except ImportError:
 
 # GPIO pin for relay (water pump) - Pin 12 = GPIO 18
 RELAY_GPIO_PIN = 18
+# If your relay turns ON at startup, it is likely ACTIVE-HIGH.
+# ACTIVE-HIGH relay: HIGH=ON, LOW=OFF  -> set RELAY_ACTIVE_LOW = False
+# ACTIVE-LOW  relay: LOW=ON,  HIGH=OFF -> set RELAY_ACTIVE_LOW = True
+RELAY_ACTIVE_LOW = False
 relay = None
+
+def _force_gpio_relay_off_level():
+    """
+    Force the GPIO pin to the relay-OFF level before gpiozero initializes.
+    This prevents brief glitches / wrong default states at startup.
+    """
+    try:
+        import RPi.GPIO as GPIO  # type: ignore
+    except Exception:
+        return
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT)
+        # Relay OFF level:
+        # - active-LOW: OFF = HIGH
+        # - active-HIGH: OFF = LOW
+        off_level = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+        GPIO.output(RELAY_GPIO_PIN, off_level)
+    except Exception:
+        # If this fails we still rely on gpiozero init/off below.
+        pass
 
 def initialize_relay():
     """Initialize relay at startup - relay stays OFF until user clicks Start Dispensing."""
@@ -35,10 +60,13 @@ def initialize_relay():
         relay = None
         return False
     try:
-        # active_high=False for active-LOW relay (LOW=ON, HIGH=OFF) - common relay modules
-        relay = LED(RELAY_GPIO_PIN, active_high=False)
-        relay.off()
-        print("✓ Water pump relay initialized - OFF at startup (only on when Start Dispensing is clicked)")
+        _force_gpio_relay_off_level()
+
+        # gpiozero polarity: active_high=True means GPIO HIGH => device ON
+        relay = LED(RELAY_GPIO_PIN, active_high=(not RELAY_ACTIVE_LOW), initial_value=False)
+        relay.off()  # hard safety: keep OFF at startup
+        relay_mode = "active-LOW" if RELAY_ACTIVE_LOW else "active-HIGH"
+        print(f"✓ Water pump relay initialized ({relay_mode}) - OFF at startup (only on when Start Dispensing is clicked)")
         return True
     except Exception as e:
         print(f"Warning: Could not initialize relay: {e}. Water pump disabled.")
