@@ -15,56 +15,6 @@ import sys
 import threading
 import time
 
-#
-# Water pump relay (GPIO)
-#
-# IMPORTANT:
-# - Keep pump OFF on startup (no automatic activation)
-# - Turn pump ON/OFF ONLY via /api/pump/start and /api/pump/stop
-#
-# Wiring reference: Relay IN -> GPIO18 (Physical Pin 12)
-RELAY_GPIO_PIN = 18
-
-# Most relay modules used in hobby projects are ACTIVE-LOW:
-#   LOW  = relay ON
-#   HIGH = relay OFF
-RELAY_ACTIVE_LOW = True
-
-try:
-    import RPi.GPIO as GPIO  # type: ignore
-    RPI_GPIO_AVAILABLE = True
-except Exception:
-    GPIO = None
-    RPI_GPIO_AVAILABLE = False
-    print("Warning: RPi.GPIO not available. Water pump control will be disabled.")
-
-def _relay_off_level():
-    return GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-
-def _relay_on_level():
-    return GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
-
-def ensure_pump_off_startup():
-    """
-    Hard safety: drive GPIO to relay-OFF level immediately at import/startup.
-    No relay initialization objects, no background threads.
-    """
-    if not RPI_GPIO_AVAILABLE:
-        return False
-    try:
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=_relay_off_level())
-        GPIO.output(RELAY_GPIO_PIN, _relay_off_level())
-        print("✓ Water pump relay forced OFF at startup (manual control only)")
-        return True
-    except Exception as e:
-        print(f"Warning: Could not force pump OFF at startup: {e}")
-        return False
-
-# Force OFF as early as possible
-ensure_pump_off_startup()
-
 # Add system dist-packages to path for picamera2
 if '/usr/lib/python3/dist-packages' not in sys.path:
     sys.path.insert(0, '/usr/lib/python3/dist-packages')
@@ -90,19 +40,7 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
         print("API will start but disease detection will not work until model is available.")
     
-    # Ensure pump is OFF at startup (manual control endpoints only)
-    ensure_pump_off_startup()
-    
     yield
-    
-    # Shutdown - cleanup
-    # Keep pump OFF on shutdown as well (do not cleanup to avoid float/glitch)
-    if RPI_GPIO_AVAILABLE:
-        try:
-            GPIO.output(RELAY_GPIO_PIN, _relay_off_level())
-            print("✓ Shutdown: Water pump forced OFF")
-        except Exception as e:
-            print(f"Warning: Shutdown pump OFF failed: {e}")
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
 
@@ -135,9 +73,6 @@ camera_lock = threading.Lock()
 current_frame = None
 
 # Global variable for serial connection (Bluetooth)
-serial_connection = None
-
-
 def load_model_and_mapping():
     """Load the disease detection model and class mapping - TensorFlow 2.20.0 compatible"""
     global model, class_mapping
@@ -363,103 +298,6 @@ async def detect_disease(file: UploadFile = File(...)):
             status_code=500, 
             detail=f"Error processing image: {str(e)}"
         )
-
-
-# Motor and servo control endpoints via Bluetooth serial
-@app.post("/api/motor/control")
-async def motor_control(direction: str):
-    """
-    Control robot motors via Bluetooth serial connection
-    ESP32 expects single character commands: F (forward), B (back), L (left), R (right), S (stop)
-    """
-    global serial_connection
-    valid_directions = ["front", "back", "left", "right", "stop"]
-    if direction.lower() not in valid_directions:
-        raise HTTPException(status_code=400, detail=f"Invalid direction. Must be one of: {valid_directions}")
-    
-    if serial_connection is None or not serial_connection.is_open:
-        raise HTTPException(status_code=503, detail="Bluetooth serial connection not available")
-    
-    try:
-        # Map direction to ESP32 single character command
-        command_map = {
-            "front": "F",
-            "back": "B",
-            "left": "L",
-            "right": "R",
-            "stop": "S"
-        }
-        cmd_char = command_map[direction.lower()]
-        serial_connection.write(cmd_char.encode())
-        return {
-            "success": True,
-            "message": f"Motor command sent: {direction} ({cmd_char})"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
-
-
-@app.post("/api/servo/control")
-async def servo_control(action: str):
-    """
-    Control servo motor for fertilizer via Bluetooth serial connection
-    ESP32 expects single character commands: A (start), X (stop)
-    """
-    global serial_connection
-    valid_actions = ["start", "stop"]
-    if action.lower() not in valid_actions:
-        raise HTTPException(status_code=400, detail=f"Invalid action. Must be one of: {valid_actions}")
-    
-    if serial_connection is None or not serial_connection.is_open:
-        raise HTTPException(status_code=503, detail="Bluetooth serial connection not available")
-    
-    try:
-        command_map = {
-            "start": "A",
-            "stop": "X"
-        }
-        cmd_char = command_map[action.lower()]
-        serial_connection.write(cmd_char.encode())
-        return {
-            "success": True,
-            "message": f"Servo command sent: {action} ({cmd_char})"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error sending command: {str(e)}")
-
-
-# ============================================
-# Water pump (relay) - Start / Stop Dispensing buttons
-# ============================================
-
-@app.post("/api/pump/start")
-async def pump_start():
-    """Turn water pump relay ON (Start Dispensing button)."""
-    if not RPI_GPIO_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Water pump GPIO not available")
-    try:
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=_relay_off_level())
-        GPIO.output(RELAY_GPIO_PIN, _relay_on_level())
-        return {"success": True, "message": "Pump ON (dispensing started)"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/pump/stop")
-async def pump_stop():
-    """Turn water pump relay OFF (Stop Dispensing button)."""
-    if not RPI_GPIO_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Water pump GPIO not available")
-    try:
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(RELAY_GPIO_PIN, GPIO.OUT, initial=_relay_off_level())
-        GPIO.output(RELAY_GPIO_PIN, _relay_off_level())
-        return {"success": True, "message": "Pump OFF (dispensing stopped)"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================
