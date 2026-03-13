@@ -492,6 +492,54 @@ async def detect_disease(file: UploadFile = File(...)):
 # Camera Endpoints
 # ============================================
 
+def get_camera_info():
+    """Read camera inventory without failing the whole startup path."""
+    try:
+        cam_info = Picamera2.global_camera_info()
+        print(f"[CAMERA] global_camera_info: {cam_info}")
+        return cam_info or []
+    except Exception as e:
+        print(f"[CAMERA] global_camera_info failed: {e}")
+        return []
+
+
+def create_picamera_instance():
+    """
+    Try a few safe ways to open the first Pi camera.
+    Some Pi setups return an empty global_camera_info() even though camera 0 opens fine.
+    """
+    attempts = []
+    cam_info = get_camera_info()
+    candidate_indexes = []
+
+    if cam_info:
+        candidate_indexes.extend(range(len(cam_info)))
+
+    if 0 not in candidate_indexes:
+        candidate_indexes.append(0)
+
+    for camera_index in candidate_indexes:
+        try:
+            print(f"[CAMERA] Trying Picamera2(camera_num={camera_index})")
+            return Picamera2(camera_num=camera_index)
+        except Exception as e:
+            attempts.append(f"camera_num={camera_index}: {e}")
+
+    try:
+        print("[CAMERA] Trying Picamera2() default constructor")
+        return Picamera2()
+    except Exception as e:
+        attempts.append(f"default constructor: {e}")
+
+    attempt_text = "; ".join(attempts) if attempts else "no camera open attempts succeeded"
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "No camera detected or camera could not be opened. "
+            f"Attempts: {attempt_text}"
+        ),
+    )
+
 def convert_frame_to_rgb(frame):
     """Convert camera frame to RGB format - handles all cases including grayscale"""
     # Handle grayscale images (1 channel or 2D array)
@@ -591,16 +639,7 @@ async def start_camera():
     try:
         with camera_lock:
             if camera is None:
-                try:
-                    cam_info = Picamera2.global_camera_info()
-                except Exception:
-                    cam_info = []
-                if not cam_info or len(cam_info) == 0:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="No camera detected. Connect a Pi camera or USB camera and try again."
-                    )
-                camera = Picamera2(camera_num=0)
+                camera = create_picamera_instance()
 
                 config = None
                 for format_attempt in ["RGB888", "BGR888", "XRGB8888", "XBGR8888"]:
@@ -648,7 +687,7 @@ async def start_camera():
     except IndexError as e:
         raise HTTPException(
             status_code=503,
-            detail="No camera detected. Connect a Pi camera or USB camera and try again."
+            detail=f"No camera detected. Connect a Pi camera or USB camera and try again. {str(e)}"
         )
     except Exception as e:
         import traceback
@@ -795,17 +834,7 @@ async def start_camera():
     try:
         with camera_lock:
             if camera is None:
-                # Check if any camera is detected before opening (avoids IndexError when no camera)
-                try:
-                    cam_info = Picamera2.global_camera_info()
-                except Exception:
-                    cam_info = []
-                if not cam_info or len(cam_info) == 0:
-                    raise HTTPException(
-                        status_code=503,
-                        detail="No camera detected. Connect a Pi camera or USB camera and try again."
-                    )
-                camera = Picamera2(camera_num=0)
+                camera = create_picamera_instance()
 
                 # Configure camera for COLOR output (fixes black & white issue)
                 # CRITICAL: Use RGB888 format for proper leaf color detection
@@ -861,7 +890,7 @@ async def start_camera():
     except IndexError as e:
         raise HTTPException(
             status_code=503,
-            detail="No camera detected. Connect a Pi camera or USB camera and try again."
+            detail=f"No camera detected. Connect a Pi camera or USB camera and try again. {str(e)}"
         )
     except Exception as e:
         import traceback
