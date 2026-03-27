@@ -27,7 +27,7 @@ function MotorControl() {
   }
 
   const buttonClass = (direction) => {
-    const baseClass = "px-6 py-4 rounded-lg font-semibold text-white transition-all duration-200 transform hover:scale-110 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+    const baseClass = "w-full sm:w-auto px-4 sm:px-6 py-3 sm:py-4 rounded-lg font-semibold text-sm sm:text-base text-white transition-all duration-200 md:hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
     const activeClass = currentDirection === direction ? "ring-4 ring-offset-2" : ""
     
     switch(direction) {
@@ -51,7 +51,7 @@ function MotorControl() {
       </p>
       
       {/* Control Pad */}
-      <div className="flex flex-col items-center gap-2">
+      <div className="flex flex-col items-center gap-2 sm:gap-3">
         {/* Forward Button */}
         <button
           onClick={() => handleMotorControl('front')}
@@ -62,7 +62,7 @@ function MotorControl() {
         </button>
         
         {/* Left and Right Row */}
-        <div className="flex gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-4 w-full sm:w-auto">
           <button
             onClick={() => handleMotorControl('left')}
             disabled={isMoving}
@@ -73,7 +73,7 @@ function MotorControl() {
           <button
             onClick={() => handleMotorControl('stop')}
             disabled={isMoving}
-            className="px-6 py-4 rounded-lg font-semibold text-white bg-gray-600 hover:bg-gray-700 transition-all duration-200 transform hover:scale-110 active:scale-95 shadow-lg"
+            className="w-full sm:w-auto px-4 sm:px-6 py-3 sm:py-4 rounded-lg font-semibold text-sm sm:text-base text-white bg-gray-600 hover:bg-gray-700 transition-all duration-200 md:hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
             ⏹️ Stop
           </button>

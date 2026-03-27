@@ -38,18 +38,18 @@ function ServoControl() {
       </div>
 
       {/* Control Buttons */}
-      <div className="flex gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
         <button
           onClick={() => handleServoControl('start')}
           disabled={isRunning}
-          className="flex-1 px-6 py-4 rounded-lg font-semibold text-white bg-green-500 hover:bg-green-600 transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+          className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-lg font-semibold text-sm sm:text-base text-white bg-green-500 hover:bg-green-600 transition-all duration-200 md:hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
         >
           ▶️ Start Dispensing
         </button>
         <button
           onClick={() => handleServoControl('stop')}
           disabled={!isRunning}
-          className="flex-1 px-6 py-4 rounded-lg font-semibold text-white bg-red-500 hover:bg-red-600 transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+          className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-lg font-semibold text-sm sm:text-base text-white bg-red-500 hover:bg-red-600 transition-all duration-200 md:hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
         >
           ⏹️ Stop Dispensing
         </button>

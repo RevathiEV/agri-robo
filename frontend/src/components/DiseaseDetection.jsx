@@ -159,16 +159,16 @@ function DiseaseDetection() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="space-y-5 sm:space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
         <div className="space-y-4">
           <h3 className="text-lg font-semibold text-gray-700">Image Input</h3>
           
-          <div className="flex gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {!cameraActive ? (
               <button
                 onClick={startCamera}
-                className="flex-1 px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
               >
                 📷 Open Camera
               </button>
@@ -176,7 +176,7 @@ function DiseaseDetection() {
               <button
                 onClick={captureImage}
                 disabled={capturing}
-                className="flex-1 px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="w-full px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {capturing ? '⏳ Capturing...' : '📸 Capture'}
               </button>
@@ -185,7 +185,7 @@ function DiseaseDetection() {
             {cameraActive && (
               <button
                 onClick={stopCamera}
-                className="px-4 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-all"
+                className="w-full px-4 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-all sm:col-span-2"
               >
                 ⏹️ Stop
               </button>
@@ -193,11 +193,11 @@ function DiseaseDetection() {
           </div>
 
           {cameraActive ? (
-            <div className="border-2 border-blue-400 rounded-lg overflow-hidden bg-black min-h-[300px] flex items-center justify-center relative">
+            <div className="border-2 border-blue-400 rounded-lg overflow-hidden bg-black min-h-[220px] sm:min-h-[300px] flex items-center justify-center relative">
               <img
                 ref={videoRef}
                 alt="Live Camera Stream"
-                className="w-full h-auto max-h-[400px] object-contain"
+                className="w-full h-auto max-h-[280px] sm:max-h-[400px] object-contain"
                 style={{ display: 'block' }}
                 crossOrigin="anonymous"
                 onError={(e) => {
@@ -214,11 +214,11 @@ function DiseaseDetection() {
             </div>
           ) : preview ? (
             <div className="space-y-3">
-              <div className="border-2 border-green-400 rounded-lg overflow-hidden bg-gray-50 min-h-[300px] flex items-center justify-center p-2">
+              <div className="border-2 border-green-400 rounded-lg overflow-hidden bg-gray-50 min-h-[220px] sm:min-h-[300px] flex items-center justify-center p-2">
                 <img
                   src={preview}
                   alt="Captured Image"
-                  className="w-full h-auto max-h-[400px] object-contain rounded-lg shadow-lg"
+                  className="w-full h-auto max-h-[280px] sm:max-h-[400px] object-contain rounded-lg shadow-lg"
                   style={{ display: 'block' }}
                   onError={(e) => {
                     console.error('Error loading captured image')
@@ -269,7 +269,7 @@ function DiseaseDetection() {
             <button
               onClick={detectDisease}
               disabled={loading}
-              className="w-full px-6 py-4 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-all transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 text-lg shadow-lg"
+              className="w-full px-5 sm:px-6 py-3 sm:py-4 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-all md:hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 text-base sm:text-lg shadow-lg"
             >
               {loading ? (
                 <span className="flex items-center justify-center gap-2">
@@ -309,12 +309,12 @@ function DiseaseDetection() {
                   ? 'bg-green-50 border-green-300'
                   : 'bg-yellow-50 border-yellow-300'
               }`}>
-                <div className="flex items-center gap-3">
-                  <span className="text-3xl">
+                <div className="flex items-start sm:items-center gap-3">
+                  <span className="text-2xl sm:text-3xl">
                     {result.is_healthy || result.is_not_a_leaf ? '✅' : '⚠️'}
                   </span>
                   <div>
-                    <h4 className="text-xl font-bold text-gray-800">
+                    <h4 className="text-lg sm:text-xl font-bold text-gray-800 break-words">
                       {result.disease}
                     </h4>
                     <p className="text-sm text-gray-600">
