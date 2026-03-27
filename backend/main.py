@@ -25,14 +25,6 @@ except ImportError:
     PICAMERA2_AVAILABLE = False
     print("Warning: picamera2 not available. Camera features will be disabled.")
 
-try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
-except ImportError:
-    GPIO_AVAILABLE = False
-    GPIO = None
-    print("Warning: RPi.GPIO not available. Pump control will run in simulation mode.")
-
 
 # Global variables for model and class mapping
 model = None
@@ -44,141 +36,6 @@ camera_streaming = False
 camera_lock = threading.Lock()
 current_frame = None
 current_motor_direction = "stop"
-
-# Pump control configuration
-# Physical pin 12 on Raspberry Pi = BCM GPIO 18
-PUMP_GPIO_PIN = 18
-SPRAY_DURATION_SECONDS = 3
-RELAY_ACTIVE_LOW = True
-pump_initialized = False
-pump_lock = threading.Lock()
-pump_running = False
-
-
-def get_pump_on_state():
-    return GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
-
-
-def get_pump_off_state():
-    return GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-
-
-def init_pump_gpio():
-    """Initialize the relay pin in a guaranteed OFF state."""
-    global pump_initialized
-
-    if not GPIO_AVAILABLE:
-        pump_initialized = False
-        print("[PUMP] GPIO not available. Using simulation mode.")
-        return False
-
-    try:
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
-        off_state = get_pump_off_state()
-        GPIO.setup(PUMP_GPIO_PIN, GPIO.OUT, initial=off_state)
-        GPIO.output(PUMP_GPIO_PIN, off_state)
-        pump_initialized = True
-        print(
-            f"[PUMP] Initialized GPIO {PUMP_GPIO_PIN} in OFF state "
-            f"({'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'})"
-        )
-        return True
-    except Exception as exc:
-        pump_initialized = False
-        print(f"[PUMP] Initialization failed: {exc}")
-        return False
-
-
-def force_pump_off():
-    """Force the relay output to the OFF state."""
-    if not GPIO_AVAILABLE or not pump_initialized:
-        print("[PUMP] OFF (simulation)")
-        return
-
-    GPIO.output(PUMP_GPIO_PIN, get_pump_off_state())
-
-
-def spray_pump_for_duration(duration_seconds=SPRAY_DURATION_SECONDS):
-    """Run the pump in the background for a fixed duration."""
-    if duration_seconds <= 0:
-        return False
-
-    def run_spray():
-        global pump_running
-        with pump_lock:
-            try:
-                pump_running = True
-                if not GPIO_AVAILABLE or not pump_initialized:
-                    print(f"[PUMP] Simulated spray for {duration_seconds} seconds")
-                    time.sleep(duration_seconds)
-                    return
-
-                GPIO.output(PUMP_GPIO_PIN, get_pump_on_state())
-                print(f"[PUMP] ON for {duration_seconds} seconds")
-                time.sleep(duration_seconds)
-            except Exception as exc:
-                print(f"[PUMP] Spray error: {exc}")
-            finally:
-                try:
-                    force_pump_off()
-                    pump_running = False
-                    print("[PUMP] OFF")
-                except Exception as exc:
-                    print(f"[PUMP] Failed to turn OFF after spraying: {exc}")
-
-    spray_thread = threading.Thread(target=run_spray, daemon=True)
-    spray_thread.start()
-    return True
-
-
-def cleanup_gpio():
-    global pump_initialized, pump_running
-
-    if GPIO_AVAILABLE:
-        try:
-            if pump_initialized:
-                force_pump_off()
-            GPIO.cleanup()
-            print("[GPIO] Cleanup complete")
-        except Exception as exc:
-            print(f"[GPIO] Cleanup error: {exc}")
-    pump_initialized = False
-    pump_running = False
-
-
-def start_pump_manual():
-    global pump_running
-
-    with pump_lock:
-        try:
-            if not GPIO_AVAILABLE or not pump_initialized:
-                pump_running = True
-                print("[PUMP] Manual ON (simulation)")
-                return True
-
-            GPIO.output(PUMP_GPIO_PIN, get_pump_on_state())
-            pump_running = True
-            print("[PUMP] Manual ON")
-            return True
-        except Exception as exc:
-            pump_running = False
-            print(f"[PUMP] Manual start error: {exc}")
-            return False
-
-
-def stop_pump_manual():
-    global pump_running
-
-    with pump_lock:
-        try:
-            force_pump_off()
-            pump_running = False
-            print("[PUMP] Manual OFF")
-            return True
-        except Exception as exc:
-            print(f"[PUMP] Manual stop error: {exc}")
-            return False
 
 
 def load_model_and_mapping():
@@ -247,25 +104,13 @@ def load_model_and_mapping():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        init_pump_gpio()
-    except Exception as exc:
-        print(f"[STARTUP] Pump initialization error: {exc}")
-
-    try:
         load_model_and_mapping()
     except Exception as exc:
         print(f"Error loading model: {exc}")
         import traceback
         traceback.print_exc()
         print("API will start but disease detection will not work until model is available.")
-
-    try:
-        yield
-    finally:
-        try:
-            cleanup_gpio()
-        except Exception as exc:
-            print(f"[SHUTDOWN] GPIO cleanup error: {exc}")
+    yield
 
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
@@ -294,14 +139,6 @@ def format_disease_name(disease_name):
     return disease_name.replace("Tomato___", "").replace("_", " ").title()
 
 
-def should_trigger_pump(disease_name):
-    if disease_name == "Not_A_Leaf":
-        return False
-    if "healthy" in disease_name.lower():
-        return False
-    return disease_name != "Unknown"
-
-
 @app.get("/")
 async def root():
     return {"message": "Agri ROBO API", "status": "running"}
@@ -327,12 +164,7 @@ async def health_check():
         "mapping_file_exists": mapping_exists,
         "num_classes": len(class_mapping) if class_mapping else 0,
         "tensorflow_version": tf.__version__,
-        "pump_gpio_pin": PUMP_GPIO_PIN,
-        "pump_initialized": pump_initialized,
-        "pump_running": pump_running,
         "current_motor_direction": current_motor_direction,
-        "relay_mode": "active_low" if RELAY_ACTIVE_LOW else "active_high",
-        "spray_duration_seconds": SPRAY_DURATION_SECONDS,
     }
 
 
@@ -356,36 +188,6 @@ async def motor_control(direction: str):
         "direction": current_motor_direction,
         "message": f"Motor command '{direction}' received",
         "hardware_connected": False,
-    }
-
-
-@app.post("/api/pump/start")
-async def pump_start():
-    """Manual pump start endpoint kept for frontend compatibility."""
-    started = start_pump_manual()
-    if not started:
-        raise HTTPException(status_code=500, detail="Failed to start pump")
-
-    return {
-        "success": True,
-        "message": "Pump started",
-        "pump_running": pump_running,
-        "pump_gpio_pin": PUMP_GPIO_PIN,
-    }
-
-
-@app.post("/api/pump/stop")
-async def pump_stop():
-    """Manual pump stop endpoint kept for frontend compatibility."""
-    stopped = stop_pump_manual()
-    if not stopped:
-        raise HTTPException(status_code=500, detail="Failed to stop pump")
-
-    return {
-        "success": True,
-        "message": "Pump stopped",
-        "pump_running": pump_running,
-        "pump_gpio_pin": PUMP_GPIO_PIN,
     }
 
 
@@ -457,10 +259,6 @@ async def detect_disease(file: UploadFile = File(...)):
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
 
-        spray_triggered = False
-        if should_trigger_pump(disease_name):
-            spray_triggered = spray_pump_for_duration(SPRAY_DURATION_SECONDS)
-
         return JSONResponse(
             {
                 "success": True,
@@ -469,9 +267,6 @@ async def detect_disease(file: UploadFile = File(...)):
                 "is_healthy": is_healthy,
                 "is_not_a_leaf": is_not_a_leaf,
                 "raw_disease_name": disease_name,
-                "spray_triggered": spray_triggered,
-                "spray_duration_seconds": SPRAY_DURATION_SECONDS if spray_triggered else 0,
-                "pump_gpio_pin": PUMP_GPIO_PIN,
                 "model_info": {
                     "input_shape": str(model.input_shape),
                     "num_classes": len(class_mapping),
