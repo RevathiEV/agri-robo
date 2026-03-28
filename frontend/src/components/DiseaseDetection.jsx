@@ -9,8 +9,6 @@ function DiseaseDetection() {
   const [error, setError] = useState(null)
   const [cameraActive, setCameraActive] = useState(false)
   const [capturing, setCapturing] = useState(false)
-  const [sprayRunning, setSprayRunning] = useState(false)
-  const [sprayLoading, setSprayLoading] = useState(false)
   const videoRef = useRef(null)
 
   const handleImageUpload = (e) => {
@@ -168,10 +166,6 @@ function DiseaseDetection() {
       })
 
       setResult(response.data)
-      // If new disease detected while spray is running, stop the spray
-      if (sprayRunning) {
-        setSprayRunning(false)
-      }
     } catch (err) {
       console.error('Error detecting disease:', err)
       setError(err.response?.data?.detail || 'Failed to detect disease. Please try again.')
@@ -180,46 +174,6 @@ function DiseaseDetection() {
     }
   }
 
-  const startSpray = async () => {
-    if (!result || !result.can_spray) {
-      setError('Please detect a disease first before starting the dispenser.')
-      return
-    }
-
-    setSprayLoading(true)
-    setError(null)
-
-    try {
-      const response = await axios.post('/api/spray/start')
-      if (response.data.success) {
-        setSprayRunning(true)
-        setError(null)
-      }
-    } catch (err) {
-      console.error('Error starting spray:', err)
-      setError(err.response?.data?.detail || 'Failed to start dispenser. Please try again.')
-    } finally {
-      setSprayLoading(false)
-    }
-  }
-
-  const stopSpray = async () => {
-    setSprayLoading(true)
-    setError(null)
-
-    try {
-      const response = await axios.post('/api/spray/stop')
-      if (response.data.success) {
-        setSprayRunning(false)
-        setError(null)
-      }
-    } catch (err) {
-      console.error('Error stopping spray:', err)
-      setError(err.response?.data?.detail || 'Failed to stop dispenser. Please try again.')
-    } finally {
-      setSprayLoading(false)
-    }
-  }
 
   return (
     <div className="space-y-6">
@@ -403,55 +357,6 @@ function DiseaseDetection() {
                 </div>
               </div>
 
-              {/* Spray Control Buttons - Only show if disease is detected (not healthy/not a leaf) */}
-              {result.can_spray && (
-                <div className="space-y-3">
-                  <div className="flex gap-2">
-                    {!sprayRunning ? (
-                      <button
-                        onClick={startSpray}
-                        disabled={sprayLoading || !result.can_spray}
-                        className="flex-1 px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      >
-                        {sprayLoading ? (
-                          <>
-                            <span className="animate-spin">⏳</span>
-                            Starting...
-                          </>
-                        ) : (
-                          <>
-                            💧 Start Dispenser
-                          </>
-                        )}
-                      </button>
-                    ) : (
-                      <button
-                        onClick={stopSpray}
-                        disabled={sprayLoading}
-                        className="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      >
-                        {sprayLoading ? (
-                          <>
-                            <span className="animate-spin">⏳</span>
-                            Stopping...
-                          </>
-                        ) : (
-                          <>
-                            ⏹️ Stop Dispenser
-                          </>
-                        )}
-                      </button>
-                    )}
-                  </div>
-                  {sprayRunning && (
-                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                      <p className="text-sm text-blue-700 font-medium">
-                        💧 Dispenser is running. Click "Stop Dispenser" to stop.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           )}
 

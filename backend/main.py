@@ -110,10 +110,13 @@ async def lifespan(app: FastAPI):
             # CRITICAL: Immediately turn OFF the relay
             # For active-LOW relay: HIGH signal = relay OFF, LOW signal = relay ON
             # relay_device.off() sends HIGH when active_high=False, which turns relay OFF
+            print("Trying to turn relay OFF (send HIGH signal for active-LOW relay)...")
             relay_device.off()  # Send HIGH signal to keep relay OFF (for active-LOW)
             time.sleep(0.3)  # Delay to ensure GPIO settles
+            print("✓ Relay should be OFF now (GPIO HIGH for active-LOW relay)")
             relay_device.off()  # Second OFF command for safety
             time.sleep(0.2)
+            print("✓ Relay confirmed OFF")
             relay_device.off()  # Third OFF command - be absolutely sure
             time.sleep(0.1)
             relay_device.off()  # Fourth OFF - maximum safety
