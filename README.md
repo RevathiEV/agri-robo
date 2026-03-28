@@ -83,7 +83,9 @@ cd frontend
 npm run dev
 ```
 
-Frontend runs on: `http://localhost:5173`
+Frontend runs on: `http://localhost:3000`
+
+For normal local development, only `npm run dev` is needed. No frontend build output folder is required unless you later choose to make a production build.
 
 ## Training the Model
 

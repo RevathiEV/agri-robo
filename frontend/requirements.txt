@@ -34,7 +34,7 @@
 # 2. Navigate to frontend directory: cd frontend
 # 3. Install dependencies: npm install
 # 4. Start dev server: npm run dev
-# 5. Build for production: npm run build
+# 5. For this project's current setup, no production build step is required
 
 # ============================================
 # Node.js Version Requirements
@@ -49,5 +49,5 @@
 # - Frontend runs on port 5173 by default (Vite)
 # - Backend API should run on port 8000
 # - Update API URL in components if backend port changes
-# - Production build creates static files in 'dist' folder
-
+# - This project currently runs the frontend with the Vite dev server
+# - No local frontend build output folder is needed for normal development

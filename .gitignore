@@ -10,7 +10,6 @@ __pycache__/
 *.pyo
 *.egg
 *.egg-info/
-dist/
 build/
 
 # Virtual Environments
@@ -30,8 +29,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-dist/
-dist-ssr/
 *.local
 
 # ============================================

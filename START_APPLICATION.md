@@ -62,7 +62,7 @@ npm run dev
 
 - **Backend API:** http://localhost:8000
 - **API Documentation:** http://localhost:8000/docs
-- **Frontend:** http://localhost:5173 (or the port shown in terminal)
+- **Frontend:** http://localhost:3000 (or the port shown in terminal)
 
 ## ✅ Verification
 
@@ -95,7 +95,7 @@ taskkill /PID <PID> /F
 
 **Frontend not starting:**
 - Make sure you ran `npm install` in frontend folder
-- Check if port 5173 is available
+- Check if port 3000 is available
 
 ## 📊 Model Information
 
