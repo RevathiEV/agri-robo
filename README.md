@@ -76,6 +76,12 @@ python main.py
 Backend runs on: `http://localhost:8000`  
 API docs: `http://localhost:8000/docs`
 
+If port `8000` is already in use, start the backend on a different port:
+
+```bash
+PORT=8001 python main.py
+```
+
 ### Start Frontend
 
 ```bash
@@ -84,6 +90,18 @@ npm run dev
 ```
 
 Frontend runs on: `http://localhost:3000`
+
+If the backend is not using `8000`, point the Vite proxy at the matching port:
+
+```bash
+BACKEND_PORT=8001 npm run dev
+```
+
+You can also set a full backend URL if needed:
+
+```bash
+VITE_BACKEND_URL=http://127.0.0.1:8001 npm run dev
+```
 
 For normal local development, only `npm run dev` is needed. No frontend build output folder is required unless you later choose to make a production build.
 
