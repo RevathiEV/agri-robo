@@ -13,6 +13,14 @@ import numpy as np
 from PIL import Image, ImageEnhance
 from tensorflow.keras.models import load_model
 import tensorflow as tf
+from spray_pump_control import (
+    cleanup_spray_pumps,
+    get_status as get_pump_status,
+    init_spray_pumps,
+    start_manual_dispense,
+    stop_dispense,
+    trigger_spray_by_disease,
+)
 
 # Add system dist-packages to path for picamera2 on Raspberry Pi OS
 if "/usr/lib/python3/dist-packages" not in sys.path:
@@ -104,13 +112,17 @@ def load_model_and_mapping():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
+        init_spray_pumps()
         load_model_and_mapping()
     except Exception as exc:
         print(f"Error loading model: {exc}")
         import traceback
         traceback.print_exc()
         print("API will start but disease detection will not work until model is available.")
-    yield
+    try:
+        yield
+    finally:
+        cleanup_spray_pumps()
 
 
 app = FastAPI(title="Agri ROBO API", version="1.0.0", lifespan=lifespan)
@@ -165,6 +177,7 @@ async def health_check():
         "num_classes": len(class_mapping) if class_mapping else 0,
         "tensorflow_version": tf.__version__,
         "current_motor_direction": current_motor_direction,
+        "pump_status": get_pump_status(),
     }
 
 
@@ -189,6 +202,30 @@ async def motor_control(direction: str):
         "message": f"Motor command '{direction}' received",
         "hardware_connected": False,
     }
+
+
+@app.get("/api/pump/status")
+async def pump_status():
+    return {
+        "success": True,
+        "pump_status": get_pump_status(),
+    }
+
+
+@app.post("/api/pump/start")
+async def pump_start():
+    result = start_manual_dispense()
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+
+@app.post("/api/pump/stop")
+async def pump_stop():
+    result = stop_dispense()
+    if not result["success"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
 
 
 @app.post("/api/detect-disease")
@@ -258,6 +295,15 @@ async def detect_disease(file: UploadFile = File(...)):
         formatted_disease = format_disease_name(disease_name)
         is_healthy = "healthy" in disease_name.lower()
         is_not_a_leaf = disease_name == "Not_A_Leaf"
+        pump_result = {
+            "success": True,
+            "auto_dispense_started": False,
+            "message": "No automatic spray needed for this detection.",
+            "pump_status": get_pump_status(),
+        }
+
+        if not is_healthy and not is_not_a_leaf:
+            pump_result = trigger_spray_by_disease(disease_name)
 
         return JSONResponse(
             {
@@ -267,6 +313,9 @@ async def detect_disease(file: UploadFile = File(...)):
                 "is_healthy": is_healthy,
                 "is_not_a_leaf": is_not_a_leaf,
                 "raw_disease_name": disease_name,
+                "auto_dispense_started": pump_result["auto_dispense_started"],
+                "pump_message": pump_result["message"],
+                "pump_status": pump_result["pump_status"],
                 "model_info": {
                     "input_shape": str(model.input_shape),
                     "num_classes": len(class_mapping),

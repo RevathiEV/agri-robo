@@ -1,9 +1,38 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
+import axios from 'axios'
 import MotorControl from './MotorControl'
 import ServoControl from './ServoControl'
 import DiseaseDetection from './DiseaseDetection'
 
 function Dashboard() {
+  const [pumpStatus, setPumpStatus] = useState({
+    pump_running: false,
+    mode: 'idle',
+    initialized: false,
+    gpio_available: false,
+  })
+
+  const refreshPumpStatus = async () => {
+    try {
+      const response = await axios.get('/api/pump/status')
+      setPumpStatus(response.data.pump_status)
+    } catch (error) {
+      console.error('Error fetching pump status:', error)
+    }
+  }
+
+  useEffect(() => {
+    refreshPumpStatus()
+
+    const intervalId = window.setInterval(() => {
+      refreshPumpStatus()
+    }, 1000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
   return (
     <div className="min-h-screen p-3 sm:p-4 md:p-8">
       {/* Header */}
@@ -33,7 +62,10 @@ function Dashboard() {
             <span className="text-2xl sm:text-3xl">💧</span>
             Fertilizer Dispenser
           </h2>
-          <ServoControl />
+          <ServoControl
+            pumpStatus={pumpStatus}
+            refreshPumpStatus={refreshPumpStatus}
+          />
         </div>
 
         {/* Disease Detection Card - Full Width */}
@@ -42,7 +74,9 @@ function Dashboard() {
             <span className="text-2xl sm:text-3xl">🔍</span>
             Leaf Disease Detection
           </h2>
-          <DiseaseDetection />
+          <DiseaseDetection
+            refreshPumpStatus={refreshPumpStatus}
+          />
         </div>
       </div>
 
@@ -55,4 +89,3 @@ function Dashboard() {
 }
 
 export default Dashboard
-

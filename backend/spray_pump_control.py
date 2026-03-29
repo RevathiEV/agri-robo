@@ -1,493 +1,386 @@
 """
-Spray Pump Control Module for Raspberry Pi
-Controls 2 relay modules connected to 9V spray pumps
+Single water pump control for Raspberry Pi.
+
+Supports:
+- active-low relay wiring (LOW = ON, HIGH = OFF)
+- automatic 3 second spray cycles after disease detection
+- manual start/stop control from the UI
+- manual stop interrupting an active automatic cycle immediately
 """
 
-import time
 import threading
+import time
 
-# Try to import RPi.GPIO
 try:
     import RPi.GPIO as GPIO
+
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
     print("Warning: RPi.GPIO not available. Running in simulation mode.")
 
-# GPIO Pin Configuration
-SPRAY_PUMP_A_GPIO = 17  # GPIO 17 (Physical Pin 11) - Relay 1 (Motor A)
-SPRAY_PUMP_B_GPIO = 27  # GPIO 27 (Physical Pin 13) - Relay 2 (Motor B)
 
-# Spray duration in seconds
+PUMP_GPIO = 17
 SPRAY_DURATION = 3
+RELAY_ACTIVE_LOW = True
 
-# Relay Configuration
-# Set to True for active LOW relays (LOW = ON, HIGH = OFF) - Most common
-# Set to False for active HIGH relays (HIGH = ON, LOW = OFF)
-# If motor doesn't turn on, try changing this to False
-RELAY_ACTIVE_LOW = False  # True = Active LOW (LOW=ON, HIGH=OFF), False = Active HIGH (HIGH=ON, LOW=OFF)
+# Backward-compatible aliases used by older diagnostics/tests.
+SPRAY_PUMP_A_GPIO = PUMP_GPIO
+SPRAY_PUMP_B_GPIO = PUMP_GPIO
 
-# Global flag to track initialization
 spray_pump_initialized = False
 
-# Disease to Motor Mapping - 9 diseases divided into 3 classes
-# Class 1: Motor A only (First 3 diseases)
-# Class 2: Motor B only (Next 3 diseases)
-# Class 3: Both Motors A & B (Last 3 diseases)
-# Note: "Tomato___healthy" and "Not_A_Leaf" are NOT in this mapping (no spray)
-DISEASE_MOTOR_MAPPING = {
-    # Class 1: Motor A only (First 3 diseases)
-    "Tomato___Bacterial_spot": "A",
-    "Tomato___Early_blight": "A",
-    "Tomato___Late_blight": "A",
-    
-    # Class 2: Motor B only (Next 3 diseases)
-    "Tomato___Leaf_Mold": "B",
-    "Tomato___Septoria_leaf_spot": "B",
-    "Tomato___Spider_mites Two-spotted_spider_mite": "B",
-    
-    # Class 3: Both Motors A & B (Last 3 diseases)
-    "Tomato___Target_Spot": "AB",
-    "Tomato___Tomato_Yellow_Leaf_Curl_Virus": "AB",
-    "Tomato___Tomato_mosaic_virus": "AB"
-}
+_state_lock = threading.RLock()
+_control_run_id = 0
+_auto_stop_event = None
+_pump_running = False
+_pump_mode = "idle"
+_last_action = "idle"
+
+
+def _on_state():
+    return GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
+
+
+def _off_state():
+    return GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
+
+
+def _ensure_initialized():
+    global spray_pump_initialized
+
+    if spray_pump_initialized:
+        return True
+
+    return init_spray_pumps()
+
+
+def _write_pump_state(enabled):
+    if not GPIO_AVAILABLE:
+        print(f"[SIMULATION] Pump {'ON' if enabled else 'OFF'}")
+        return True
+
+    if not spray_pump_initialized:
+        print("[PUMP] Pump not initialized. Call init_spray_pumps() first.")
+        return False
+
+    try:
+        GPIO.output(PUMP_GPIO, _on_state() if enabled else _off_state())
+        print(
+            f"[PUMP] GPIO {PUMP_GPIO} set to "
+            f"{'ON' if enabled else 'OFF'} "
+            f"(relay is {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'})"
+        )
+        return True
+    except Exception as exc:
+        print(f"[PUMP ERROR] Failed to write GPIO {PUMP_GPIO}: {exc}")
+        return False
+
+
+def _advance_run_id_locked():
+    global _control_run_id
+
+    _control_run_id += 1
+    return _control_run_id
+
+
+def _cancel_auto_cycle_locked():
+    global _auto_stop_event
+
+    if _auto_stop_event is not None:
+        _auto_stop_event.set()
+        _auto_stop_event = None
+
+
+def _set_mode_locked(mode, running, action):
+    global _pump_mode, _pump_running, _last_action
+
+    _pump_mode = mode
+    _pump_running = running
+    _last_action = action
 
 
 def init_spray_pumps():
-    """
-    Initialize GPIO pins for spray pumps
-    Returns True if successful, False otherwise
-    IMPORTANT: Motors are set to OFF state during initialization
-    """
+    """Initialize the relay output pin and force the pump OFF."""
     global spray_pump_initialized
-    
+
     if not GPIO_AVAILABLE:
-        print("GPIO not available - spray pumps disabled (simulation mode)")
-        spray_pump_initialized = False
-        return False
-    
-    try:
-        # Clean up any previous GPIO state first (in case of restart)
-        try:
-            GPIO.cleanup()
-            print("[INIT] Cleaned up previous GPIO state")
-        except:
-            pass  # Ignore if cleanup fails (no previous state)
-        
-        # Set GPIO mode to BCM (Broadcom pin numbering)
-        GPIO.setmode(GPIO.BCM)
-        
-        # Determine OFF state based on relay type
-        # For active LOW: HIGH = OFF, LOW = ON
-        # For active HIGH: LOW = OFF, HIGH = ON
-        off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-        on_state = GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
-        
-        print(f"[INIT] Relay type: {'Active LOW' if RELAY_ACTIVE_LOW else 'Active HIGH'}")
-        print(f"[INIT] OFF state = GPIO.{'HIGH' if RELAY_ACTIVE_LOW else 'LOW'}, ON state = GPIO.{'LOW' if RELAY_ACTIVE_LOW else 'HIGH'}")
-        
-        # CRITICAL: For Active HIGH relays, we need to ensure pins are LOW (OFF) immediately
-        # Set pins as inputs first with pull-down to ensure they're LOW
-        if not RELAY_ACTIVE_LOW:  # Active HIGH relay
-            print("[INIT] Setting pins as inputs with pull-down first (Active HIGH relay)")
-            GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-            GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-            import time
-            time.sleep(0.05)  # Small delay to ensure pull-down takes effect
-        
-        # Now configure as outputs with OFF state
-        print(f"[INIT] Configuring pins as outputs with initial OFF state")
-        GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=off_state)
-        GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=off_state)
-        
-        # Explicitly set to OFF state multiple times to ensure it sticks
-        import time
-        for i in range(3):
-            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-            time.sleep(0.05)
-        
-        # Verify the state by reading back (if possible)
-        try:
-            # Temporarily switch to input to read state
-            GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.IN)
-            read_state_a = GPIO.input(SPRAY_PUMP_A_GPIO)
-            GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=off_state)
-            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-            
-            GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.IN)
-            read_state_b = GPIO.input(SPRAY_PUMP_B_GPIO)
-            GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=off_state)
-            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-            
-            print(f"[INIT] Verified GPIO state - Motor A: {read_state_a}, Motor B: {read_state_b} (should be {off_state})")
-        except Exception as e:
-            print(f"[INIT] Could not verify GPIO state: {e}")
-        
-        print(f"[INIT] GPIO pins configured and set to OFF state (GPIO={off_state})")
-        
         spray_pump_initialized = True
-        relay_type_str = "Active LOW" if RELAY_ACTIVE_LOW else "Active HIGH"
-        print(f"✓ Spray pumps initialized successfully")
-        print(f"  - Motor A: GPIO {SPRAY_PUMP_A_GPIO} (Physical Pin 11) - State: OFF")
-        print(f"  - Motor B: GPIO {SPRAY_PUMP_B_GPIO} (Physical Pin 13) - State: OFF")
-        print(f"  - Relay Type: {relay_type_str}")
-        print(f"  - OFF State: GPIO={'HIGH' if RELAY_ACTIVE_LOW else 'LOW'}")
-        print(f"  - ON State: GPIO={'LOW' if RELAY_ACTIVE_LOW else 'HIGH'}")
+        print("[INIT] GPIO not available. Pump controller ready in simulation mode.")
         return True
-        
-    except Exception as e:
-        print(f"[INIT ERROR] Error initializing spray pumps: {e}")
-        import traceback
-        traceback.print_exc()
+
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(PUMP_GPIO, GPIO.OUT, initial=_off_state())
+        GPIO.output(PUMP_GPIO, _off_state())
+        spray_pump_initialized = True
+        print(
+            f"[INIT] Pump GPIO {PUMP_GPIO} initialized. "
+            f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'}."
+        )
+        return True
+    except Exception as exc:
         spray_pump_initialized = False
+        print(f"[INIT ERROR] Failed to initialize pump GPIO: {exc}")
         return False
 
 
-def turn_on_pump(motor):
-    """
-    Turn on a specific pump
-    Args:
-        motor: 'A' or 'B' or 'AB' for both
-    """
-    if not spray_pump_initialized:
-        if GPIO_AVAILABLE:
-            print("[TURN_ON_PUMP] Spray pumps not initialized. Call init_spray_pumps() first.")
-        else:
-            print(f"[SIMULATION] Motor {motor} ON")
+def turn_on_pump(_motor="A"):
+    """Compatibility wrapper for older code paths."""
+    if not _ensure_initialized():
         return False
-    
-    try:
-        # Support both active LOW and active HIGH relays
-        on_state = GPIO.LOW if RELAY_ACTIVE_LOW else GPIO.HIGH
-        
-        if motor == "A":
-            GPIO.output(SPRAY_PUMP_A_GPIO, on_state)
-            relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
-            print(f"[TURN_ON_PUMP] Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned ON (GPIO={relay_type})")
-        elif motor == "B":
-            GPIO.output(SPRAY_PUMP_B_GPIO, on_state)
-            relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
-            print(f"[TURN_ON_PUMP] Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned ON (GPIO={relay_type})")
-        elif motor == "AB":
-            GPIO.output(SPRAY_PUMP_A_GPIO, on_state)
-            GPIO.output(SPRAY_PUMP_B_GPIO, on_state)
-            relay_type = "LOW" if RELAY_ACTIVE_LOW else "HIGH"
-            print(f"[TURN_ON_PUMP] Both Motors A & B turned ON (GPIO={relay_type})")
-        else:
-            print(f"[TURN_ON_PUMP] Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
-            return False
-        return True
-    except Exception as e:
-        print(f"[TURN_ON_PUMP ERROR] Error turning on pump: {e}")
-        import traceback
-        traceback.print_exc()
+    return _write_pump_state(True)
+
+
+def turn_off_pump(_motor="A"):
+    """Compatibility wrapper for older code paths."""
+    if not _ensure_initialized():
         return False
+    return _write_pump_state(False)
 
 
-def turn_off_pump(motor):
-    """
-    Turn off a specific pump
-    Args:
-        motor: 'A' or 'B' or 'AB' for both
-    """
-    if not spray_pump_initialized:
-        if GPIO_AVAILABLE:
-            print("[TURN_OFF_PUMP] Spray pumps not initialized. Call init_spray_pumps() first.")
-        else:
-            print(f"[SIMULATION] Motor {motor} OFF")
-        return False
-    
-    try:
-        # Support both active LOW and active HIGH relays
-        off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-        
-        if motor == "A":
-            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-            print(f"[TURN_OFF_PUMP] Motor A (GPIO {SPRAY_PUMP_A_GPIO}) turned OFF")
-        elif motor == "B":
-            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-            print(f"[TURN_OFF_PUMP] Motor B (GPIO {SPRAY_PUMP_B_GPIO}) turned OFF")
-        elif motor == "AB":
-            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-            print(f"[TURN_OFF_PUMP] Both Motors A & B turned OFF")
-        else:
-            print(f"[TURN_OFF_PUMP] Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
-            return False
-        return True
-    except Exception as e:
-        print(f"[TURN_OFF_PUMP ERROR] Error turning off pump: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+def _run_auto_cycle(run_id, stop_event, duration):
+    interrupted = stop_event.wait(duration)
+
+    with _state_lock:
+        global _auto_stop_event
+
+        if run_id != _control_run_id:
+            return
+
+        if _auto_stop_event is stop_event:
+            _auto_stop_event = None
+
+        if interrupted:
+            print("[AUTO] Automatic spray interrupted before completion.")
+            return
+
+        if _pump_mode != "auto":
+            return
+
+        turn_off_pump()
+        _set_mode_locked("idle", False, "auto_complete")
+        print(f"[AUTO] Automatic spray completed after {duration} seconds.")
 
 
-def trigger_spray_pump(motor, duration=SPRAY_DURATION):
-    """
-    Trigger spray pump(s) for specified duration in seconds
-    Runs in background thread to avoid blocking
-    
-    Args:
-        motor: 'A' or 'B' or 'AB' for both motors simultaneously
-        duration: Duration in seconds (default: 3 seconds)
-    
-    Returns:
-        True if spray was triggered, False otherwise
-    """
-    if motor not in ["A", "B", "AB"]:
-        print(f"Invalid motor selection: {motor}. Use 'A', 'B', or 'AB'")
-        return False
-    
-    def run_spray():
-        """Internal function to run spray in background thread"""
-        try:
-            # Turn on pump(s)
-            turn_on_pump(motor)
-            
-            # Wait for specified duration
-            time.sleep(duration)
-            
-            # Turn off pump(s)
-            turn_off_pump(motor)
-            
-            print(f"Spray cycle completed: {motor} for {duration} seconds")
-            
-        except Exception as e:
-            print(f"Error during spray cycle: {e}")
-            # Ensure pumps are turned off in case of error
-            try:
-                turn_off_pump(motor)
-            except:
-                pass
-    
-    # Run in background thread to avoid blocking API response
-    spray_thread = threading.Thread(target=run_spray, daemon=True)
-    spray_thread.start()
-    return True
+def trigger_auto_dispense(duration=SPRAY_DURATION):
+    """Run the pump automatically for a fixed duration."""
+    if not _ensure_initialized():
+        return {
+            "success": False,
+            "auto_dispense_started": False,
+            "message": "Pump controller is not initialized.",
+            "pump_status": get_status(),
+        }
+
+    with _state_lock:
+        run_id = _advance_run_id_locked()
+        _cancel_auto_cycle_locked()
+
+        if _pump_mode == "manual":
+            print("[AUTO] Manual dispensing is active. Leaving pump running manually.")
+            return {
+                "success": True,
+                "auto_dispense_started": False,
+                "message": "Pump is already running in manual mode.",
+                "pump_status": get_status(),
+            }
+
+        if not turn_on_pump():
+            _set_mode_locked("idle", False, "auto_failed")
+            return {
+                "success": False,
+                "auto_dispense_started": False,
+                "message": "Failed to turn the pump on for automatic spray.",
+                "pump_status": get_status(),
+            }
+
+        stop_event = threading.Event()
+        global _auto_stop_event
+        _auto_stop_event = stop_event
+        _set_mode_locked("auto", True, "auto_start")
+
+        spray_thread = threading.Thread(
+            target=_run_auto_cycle,
+            args=(run_id, stop_event, duration),
+            daemon=True,
+        )
+        spray_thread.start()
+
+        print(f"[AUTO] Automatic spray started for {duration} seconds.")
+        return {
+            "success": True,
+            "auto_dispense_started": True,
+            "message": f"Automatic spray started for {duration} seconds.",
+            "pump_status": get_status(),
+        }
 
 
-def trigger_spray_by_disease(disease_name):
-    """
-    Trigger spray pump based on detected disease
-    Does NOT spray for "healthy" or "Not_A_Leaf"
-    
-    Args:
-        disease_name: Disease name from class mapping (e.g., "Tomato___Bacterial_spot")
-    
-    Returns:
-        Motor(s) activated ('A', 'B', 'AB') or None if no spray needed
-    """
-    # Don't spray for healthy or non-leaf detections
-    if disease_name == "Tomato___healthy" or disease_name == "Not_A_Leaf":
-        print(f"No spray needed for: {disease_name}")
-        return None
-    
-    # Check if disease is in mapping
-    if disease_name in DISEASE_MOTOR_MAPPING:
-        motor = DISEASE_MOTOR_MAPPING[disease_name]
-        trigger_spray_pump(motor, duration=SPRAY_DURATION)
-        print(f"Spray triggered: {motor} for disease: {disease_name}")
-        return motor
-    else:
-        print(f"No spray mapping for disease: {disease_name}")
-        return None
+def start_manual_dispense():
+    """Turn the pump on and keep it on until stopped manually."""
+    if not _ensure_initialized():
+        return {
+            "success": False,
+            "message": "Pump controller is not initialized.",
+            "pump_status": get_status(),
+        }
 
+    with _state_lock:
+        _advance_run_id_locked()
+        _cancel_auto_cycle_locked()
 
-def cleanup_spray_pumps():
-    """
-    Cleanup GPIO pins on shutdown
-    Turns off all pumps and cleans up GPIO
-    """
-    global spray_pump_initialized
-    
-    if spray_pump_initialized and GPIO_AVAILABLE:
-        try:
-            # Turn off all pumps (use OFF state, not LOW)
-            off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-            GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-            GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-            
-            # Cleanup GPIO
-            GPIO.cleanup()
-            
-            spray_pump_initialized = False
-            print("✓ Spray pump GPIO cleaned up")
-        except Exception as e:
-            print(f"Error during cleanup: {e}")
-    else:
-        print("Spray pumps not initialized or GPIO not available")
+        if not turn_on_pump():
+            _set_mode_locked("idle", False, "manual_failed")
+            return {
+                "success": False,
+                "message": "Failed to start manual dispensing.",
+                "pump_status": get_status(),
+            }
 
+        _set_mode_locked("manual", True, "manual_start")
 
-def get_status():
-    """
-    Get current status of spray pump system
-    
-    Returns:
-        Dictionary with status information
-    """
+    print("[MANUAL] Pump started manually.")
     return {
-        "gpio_available": GPIO_AVAILABLE,
-        "initialized": spray_pump_initialized,
-        "motor_a_gpio": SPRAY_PUMP_A_GPIO,
-        "motor_b_gpio": SPRAY_PUMP_B_GPIO,
-        "spray_duration": SPRAY_DURATION,
-        "disease_mapping": DISEASE_MOTOR_MAPPING
+        "success": True,
+        "message": "Pump started manually.",
+        "pump_status": get_status(),
     }
 
 
-def test_relay_type(motor="A", test_duration=2):
+def stop_dispense():
+    """Turn the pump off immediately and cancel any automatic timer."""
+    if not _ensure_initialized():
+        return {
+            "success": False,
+            "message": "Pump controller is not initialized.",
+            "pump_status": get_status(),
+        }
+
+    with _state_lock:
+        _advance_run_id_locked()
+        _cancel_auto_cycle_locked()
+        turn_off_pump()
+        _set_mode_locked("idle", False, "manual_stop")
+
+    print("[MANUAL] Pump stopped.")
+    return {
+        "success": True,
+        "message": "Pump stopped.",
+        "pump_status": get_status(),
+    }
+
+
+def trigger_spray_pump(_motor="A", duration=SPRAY_DURATION):
+    """Compatibility wrapper for timed spray behavior."""
+    result = trigger_auto_dispense(duration=duration)
+    return result["success"]
+
+
+def trigger_spray_by_disease(disease_name, duration=SPRAY_DURATION):
     """
-    Test function to identify relay type (active LOW vs active HIGH)
-    Tests both types and asks user which one worked
+    Spray only for actual diseases.
+
+    Healthy leaves, non-leaf detections, and unknown values must not spray.
     """
+    if disease_name in {"Tomato___healthy", "Not_A_Leaf", "Unknown"}:
+        print(f"[AUTO] No spray needed for result: {disease_name}")
+        return {
+            "success": True,
+            "auto_dispense_started": False,
+            "message": "No automatic spray needed for this detection.",
+            "pump_status": get_status(),
+        }
+
+    return trigger_auto_dispense(duration=duration)
+
+
+def cleanup_spray_pumps():
+    """Force the pump OFF and release GPIO resources."""
+    global spray_pump_initialized
+
+    with _state_lock:
+        _advance_run_id_locked()
+        _cancel_auto_cycle_locked()
+        _set_mode_locked("idle", False, "cleanup")
+
+    if not GPIO_AVAILABLE:
+        spray_pump_initialized = False
+        print("[CLEANUP] Pump controller cleaned up in simulation mode.")
+        return
+
+    if not spray_pump_initialized:
+        print("[CLEANUP] Pump controller was not initialized.")
+        return
+
+    try:
+        GPIO.output(PUMP_GPIO, _off_state())
+        GPIO.cleanup(PUMP_GPIO)
+        spray_pump_initialized = False
+        print("[CLEANUP] Pump GPIO cleaned up.")
+    except Exception as exc:
+        print(f"[CLEANUP ERROR] Failed during GPIO cleanup: {exc}")
+
+
+def get_status():
+    """Return the current state of the single-pump controller."""
+    with _state_lock:
+        return {
+            "gpio_available": GPIO_AVAILABLE,
+            "initialized": spray_pump_initialized,
+            "pump_gpio": PUMP_GPIO,
+            "relay_active_low": RELAY_ACTIVE_LOW,
+            "pump_running": _pump_running,
+            "mode": _pump_mode,
+            "last_action": _last_action,
+            "spray_duration": SPRAY_DURATION,
+        }
+
+
+def test_relay_type(test_duration=2):
+    """Simple relay test helper for the single pump wiring."""
     if not GPIO_AVAILABLE:
         print("GPIO not available - cannot test relay type")
         return None
-    
+
     print("=" * 60)
-    print("Relay Type Test - Motor", motor)
+    print("Relay Type Test")
     print("=" * 60)
-    print("\nThis will test both relay types to find which one works.")
-    print("Watch your motor and listen for the relay click.\n")
-    
-    # Initialize GPIO
+    print(f"Testing GPIO {PUMP_GPIO} for {test_duration} seconds each mode.\n")
+
     GPIO.setmode(GPIO.BCM)
-    gpio_pin = SPRAY_PUMP_A_GPIO if motor == "A" else SPRAY_PUMP_B_GPIO
-    GPIO.setup(gpio_pin, GPIO.OUT)
-    
+    GPIO.setup(PUMP_GPIO, GPIO.OUT)
+
     try:
-        # Test 1: Active LOW (LOW = ON)
-        print("Test 1: Testing ACTIVE LOW (LOW = ON, HIGH = OFF)")
-        print(f"Setting GPIO {gpio_pin} to LOW (should turn motor ON)...")
-        GPIO.output(gpio_pin, GPIO.LOW)
-        print(f"Motor should be ON now. Did it turn on? (waiting {test_duration} seconds)")
+        print("Test 1: LOW = ON")
+        GPIO.output(PUMP_GPIO, GPIO.LOW)
         time.sleep(test_duration)
-        GPIO.output(gpio_pin, GPIO.HIGH)
-        print("Setting GPIO to HIGH (should turn motor OFF)")
-        time.sleep(1)
-        
-        response1 = input("\nDid the motor turn ON when GPIO was LOW? (y/n): ").lower().strip()
-        
-        # Test 2: Active HIGH (HIGH = ON)
-        print("\nTest 2: Testing ACTIVE HIGH (HIGH = ON, LOW = OFF)")
-        print(f"Setting GPIO {gpio_pin} to HIGH (should turn motor ON)...")
-        GPIO.output(gpio_pin, GPIO.HIGH)
-        print(f"Motor should be ON now. Did it turn on? (waiting {test_duration} seconds)")
+        GPIO.output(PUMP_GPIO, GPIO.HIGH)
+        response_low = input("Did the pump turn on while GPIO was LOW? (y/n): ").strip().lower()
+
+        print("\nTest 2: HIGH = ON")
+        GPIO.output(PUMP_GPIO, GPIO.HIGH)
         time.sleep(test_duration)
-        GPIO.output(gpio_pin, GPIO.LOW)
-        print("Setting GPIO to LOW (should turn motor OFF)")
-        time.sleep(1)
-        
-        response2 = input("\nDid the motor turn ON when GPIO was HIGH? (y/n): ").lower().strip()
-        
-        # Determine relay type
-        if response1 == 'y' and response2 != 'y':
-            print("\n✓ Result: Your relay is ACTIVE LOW (LOW = ON, HIGH = OFF)")
-            print("  Current setting RELAY_ACTIVE_LOW = True is CORRECT")
+        GPIO.output(PUMP_GPIO, GPIO.LOW)
+        response_high = input("Did the pump turn on while GPIO was HIGH? (y/n): ").strip().lower()
+
+        if response_low == "y" and response_high != "y":
+            print("\nYour relay is ACTIVE LOW.")
             return True
-        elif response2 == 'y' and response1 != 'y':
-            print("\n✓ Result: Your relay is ACTIVE HIGH (HIGH = ON, LOW = OFF)")
-            print("  You need to change RELAY_ACTIVE_LOW = False in the code")
+        if response_high == "y" and response_low != "y":
+            print("\nYour relay is ACTIVE HIGH.")
             return False
-        elif response1 == 'y' and response2 == 'y':
-            print("\n⚠ Warning: Motor turned on in both tests!")
-            print("  Check your wiring - motor circuit might be always connected")
-            return None
-        else:
-            print("\n✗ Motor didn't turn on in either test!")
-            print("  Check:")
-            print("  1. Motor circuit wiring (9V battery, relay COM/NO, motor)")
-            print("  2. Relay module power (VCC to 5V, GND to GND)")
-            print("  3. Relay module jumper settings")
-            return None
-            
+
+        print("\nCould not determine relay type clearly. Recheck wiring.")
+        return None
     finally:
-        # Turn off motor
-        GPIO.output(gpio_pin, GPIO.HIGH)
-        time.sleep(0.5)
-        GPIO.output(gpio_pin, GPIO.LOW)
-        time.sleep(0.5)
-        GPIO.output(gpio_pin, GPIO.HIGH)
-        GPIO.cleanup()
+        GPIO.output(PUMP_GPIO, _off_state())
+        GPIO.cleanup(PUMP_GPIO)
 
 
-def diagnose_motor_startup():
-    """
-    Diagnostic function to check why motor might be turning on at startup
-    """
-    if not GPIO_AVAILABLE:
-        print("[DIAGNOSE] GPIO not available")
-        return
-    
-    try:
-        # Check current GPIO state
-        GPIO.setmode(GPIO.BCM)
-        
-        # Try to read current state (might not work for outputs, but worth trying)
-        try:
-            state_a = GPIO.input(SPRAY_PUMP_A_GPIO)
-            state_b = GPIO.input(SPRAY_PUMP_B_GPIO)
-            print(f"[DIAGNOSE] Current GPIO state - Motor A: {state_a}, Motor B: {state_b}")
-        except:
-            print("[DIAGNOSE] Cannot read GPIO state (pins configured as outputs)")
-        
-        # Set to OFF state
-        off_state = GPIO.HIGH if RELAY_ACTIVE_LOW else GPIO.LOW
-        GPIO.setup(SPRAY_PUMP_A_GPIO, GPIO.OUT, initial=off_state)
-        GPIO.setup(SPRAY_PUMP_B_GPIO, GPIO.OUT, initial=off_state)
-        GPIO.output(SPRAY_PUMP_A_GPIO, off_state)
-        GPIO.output(SPRAY_PUMP_B_GPIO, off_state)
-        
-        print(f"[DIAGNOSE] Set GPIO to OFF state: {off_state} (HIGH={GPIO.HIGH}, LOW={GPIO.LOW})")
-        print(f"[DIAGNOSE] Relay type: {'Active LOW' if RELAY_ACTIVE_LOW else 'Active HIGH'}")
-        print(f"[DIAGNOSE] If motor is ON, try changing RELAY_ACTIVE_LOW to {not RELAY_ACTIVE_LOW}")
-        
-        GPIO.cleanup()
-    except Exception as e:
-        print(f"[DIAGNOSE ERROR] {e}")
-        import traceback
-        traceback.print_exc()
-
-# Test function (run when executed directly)
 if __name__ == "__main__":
-    import sys
-    
-    # Check if user wants to test relay type
-    if len(sys.argv) > 1 and sys.argv[1] == "test-relay":
-        motor_to_test = sys.argv[2] if len(sys.argv) > 2 else "A"
-        test_relay_type(motor_to_test)
-    else:
-        print("=" * 60)
-        print("Spray Pump Control - Test Mode")
-        print("=" * 60)
-        print(f"Current relay setting: {'Active LOW' if RELAY_ACTIVE_LOW else 'Active HIGH'}")
-        print("\nTo test relay type, run: python spray_pump_control.py test-relay [A|B]")
-        print("=" * 60)
-        
-        # Initialize
-        init_spray_pumps()
-        
-        if spray_pump_initialized or not GPIO_AVAILABLE:
-            print("\nTesting Motor A (3 seconds)...")
-            trigger_spray_pump("A", duration=3)
-            time.sleep(4)  # Wait for spray to complete
-            
-            print("\nTesting Motor B (3 seconds)...")
-            trigger_spray_pump("B", duration=3)
-            time.sleep(4)  # Wait for spray to complete
-            
-            print("\nTesting Both Motors (3 seconds)...")
-            trigger_spray_pump("AB", duration=3)
-            time.sleep(4)  # Wait for spray to complete
-            
-            print("\nTest completed!")
-            print("\nIf motor didn't turn on, try:")
-            print("  1. Run: python spray_pump_control.py test-relay A")
-            print("  2. Change RELAY_ACTIVE_LOW to False if test shows active HIGH")
-        else:
-            print("Failed to initialize spray pumps")
-        
-        # Cleanup
-        cleanup_spray_pumps()
-        print("\nStatus:", get_status())
+    init_spray_pumps()
+    print("Status:", get_status())
+    print("\nTesting 3 second automatic spray...")
+    trigger_auto_dispense()
+    time.sleep(SPRAY_DURATION + 1)
+    cleanup_spray_pumps()

@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 
-function DiseaseDetection() {
+function DiseaseDetection({ refreshPumpStatus }) {
   const [selectedImage, setSelectedImage] = useState(null)
   const [preview, setPreview] = useState(null)
   const [result, setResult] = useState(null)
@@ -150,6 +150,7 @@ function DiseaseDetection() {
       })
 
       setResult(response.data)
+      await refreshPumpStatus()
     } catch (err) {
       console.error('Error detecting disease:', err)
       setError(err.response?.data?.detail || 'Failed to detect disease. Please try again.')
@@ -339,7 +340,9 @@ function DiseaseDetection() {
                 ) : (
                   <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                     <p className="text-yellow-700 font-medium flex items-center gap-2">
-                      ⚠️ Disease detected. Use Start / Stop Dispensing to control the pump.
+                      {result.auto_dispense_started
+                        ? '💧 Disease detected. Pump turned on automatically for 3 seconds.'
+                        : `⚠️ Disease detected. ${result.pump_message || 'Use Start / Stop Dispensing to control the pump.'}`}
                     </p>
                   </div>
                 )}
@@ -360,4 +363,3 @@ function DiseaseDetection() {
 }
 
 export default DiseaseDetection
-

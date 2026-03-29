@@ -1,21 +1,29 @@
 import React, { useState } from 'react'
 import axios from 'axios'
 
-function ServoControl() {
-  const [isRunning, setIsRunning] = useState(false)
-  const [status, setStatus] = useState('Stopped')
+function ServoControl({ pumpStatus, refreshPumpStatus }) {
+  const [pendingAction, setPendingAction] = useState(null)
+
+  const isRunning = pumpStatus?.pump_running || false
+  const mode = pumpStatus?.mode || 'idle'
+  const status = mode === 'manual'
+    ? 'Running Manually'
+    : mode === 'auto'
+    ? 'Auto Spray Active'
+    : 'Stopped'
 
   const handleServoControl = async (action) => {
     try {
+      setPendingAction(action)
       const endpoint = action === 'start' ? '/api/pump/start' : '/api/pump/stop'
       const response = await axios.post(endpoint)
       console.log('Pump control response:', response.data)
-      
-      setIsRunning(action === 'start')
-      setStatus(action === 'start' ? 'Running' : 'Stopped')
+      await refreshPumpStatus()
     } catch (error) {
       console.error('Error controlling pump:', error)
       alert(`Pump control error: ${error.response?.data?.detail || error.message}`)
+    } finally {
+      setPendingAction(null)
     }
   }
 
@@ -41,24 +49,24 @@ function ServoControl() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
         <button
           onClick={() => handleServoControl('start')}
-          disabled={isRunning}
+          disabled={isRunning || pendingAction === 'start'}
           className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-lg font-semibold text-sm sm:text-base text-white bg-green-500 hover:bg-green-600 transition-all duration-200 md:hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
         >
-          ▶️ Start Dispensing
+          {pendingAction === 'start' ? 'Starting...' : '▶️ Start Dispensing'}
         </button>
         <button
           onClick={() => handleServoControl('stop')}
-          disabled={!isRunning}
+          disabled={!isRunning || pendingAction === 'stop'}
           className="w-full px-4 sm:px-6 py-3 sm:py-4 rounded-lg font-semibold text-sm sm:text-base text-white bg-red-500 hover:bg-red-600 transition-all duration-200 md:hover:scale-105 active:scale-95 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
         >
-          ⏹️ Stop Dispensing
+          {pendingAction === 'stop' ? 'Stopping...' : '⏹️ Stop Dispensing'}
         </button>
       </div>
 
       {/* Info */}
       <div className="mt-4 p-3 bg-blue-50 rounded-lg">
         <p className="text-sm text-blue-700">
-          💡 Start Dispensing turns the pump ON; Stop Dispensing turns it OFF. No automatic spraying.
+          💡 Start Dispensing keeps the pump ON until Stop Dispensing. Disease detection can also trigger a 3 second automatic spray.
         </p>
       </div>
     </div>
@@ -66,4 +74,3 @@ function ServoControl() {
 }
 
 export default ServoControl
-
