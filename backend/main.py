@@ -16,7 +16,6 @@ import tensorflow as tf
 from spray_pump_control import (
     cleanup_spray_pumps,
     get_status as get_pump_status,
-    init_spray_pumps,
     start_manual_dispense,
     stop_dispense,
     trigger_spray_by_disease,
@@ -112,7 +111,6 @@ def load_model_and_mapping():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
-        init_spray_pumps()
         load_model_and_mapping()
     except Exception as exc:
         print(f"Error loading model: {exc}")
