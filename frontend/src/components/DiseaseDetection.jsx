@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 
@@ -20,7 +19,6 @@ function DiseaseDetection({ refreshPumpStatus }) {
       setPreview(URL.createObjectURL(file))
       setResult(null)
       setError(null)
-      // Stop camera if active
       if (cameraActive) {
         stopCamera()
       }
@@ -58,41 +56,41 @@ function DiseaseDetection({ refreshPumpStatus }) {
 
   const captureImage = async () => {
     if (!cameraActive) return
-    
+
     try {
       setCapturing(true)
       setError(null)
-      
+
       const response = await axios.post('/api/camera/capture', {}, {
         responseType: 'blob'
       })
-      
+
       if (!response.data || response.data.size === 0) {
         throw new Error('Received empty image data')
       }
-      
+
       const blob = response.data
       const file = new File([blob], 'captured.jpg', { type: 'image/jpeg' })
       const previewUrl = URL.createObjectURL(blob)
-      
+
       setCameraActive(false)
-      
+
       if (videoRef.current) {
         videoRef.current.src = ''
       }
-      
+
       try {
         await axios.post('/api/camera/stop')
       } catch (stopErr) {
         console.warn('Error stopping camera:', stopErr)
       }
-      
+
       setTimeout(() => {
         setSelectedImage(file)
         setPreview(previewUrl)
         setResult(null)
       }, 100)
-      
+
     } catch (err) {
       console.error('Error capturing image:', err)
       setError(err.response?.data?.detail || err.message || 'Failed to capture image. Please try again.')
@@ -159,46 +157,48 @@ function DiseaseDetection({ refreshPumpStatus }) {
     }
   }
 
+  const resultTone = result?.is_healthy || result?.is_not_a_leaf
+    ? 'border-emerald-300 bg-emerald-50'
+    : 'border-amber-300 bg-amber-50'
+
   return (
     <div className="space-y-5 sm:space-y-6">
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+      <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-2">
         <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700">Image Input</h3>
-          
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {!cameraActive ? (
               <button
                 onClick={startCamera}
-                className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                className="w-full rounded-2xl border border-sky-300 bg-sky-600 px-4 py-3 font-medium text-white transition-all hover:-translate-y-0.5 hover:bg-sky-700"
               >
-                📷 Open Camera
+                Open Camera
               </button>
             ) : (
               <button
                 onClick={captureImage}
                 disabled={capturing}
-                className="w-full px-4 py-3 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="w-full rounded-2xl border border-emerald-300 bg-emerald-600 px-4 py-3 font-medium text-white transition-all hover:-translate-y-0.5 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {capturing ? '⏳ Capturing...' : '📸 Capture'}
+                {capturing ? 'Capturing...' : 'Capture'}
               </button>
             )}
-            
+
             {cameraActive && (
               <button
                 onClick={stopCamera}
-                className="w-full px-4 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-all sm:col-span-2"
+                className="w-full rounded-2xl border border-rose-300 bg-rose-600 px-4 py-3 font-medium text-white transition-all hover:-translate-y-0.5 hover:bg-rose-700 sm:col-span-2"
               >
-                ⏹️ Stop
+                Stop Camera
               </button>
             )}
           </div>
 
           {cameraActive ? (
-            <div className="border-2 border-blue-400 rounded-lg overflow-hidden bg-black min-h-[220px] sm:min-h-[300px] flex items-center justify-center relative">
+            <div className="relative flex min-h-[240px] items-center justify-center overflow-hidden rounded-[28px] border border-slate-200 bg-slate-950 shadow-[0_24px_60px_rgba(15,23,42,0.16)] sm:min-h-[320px]">
               <img
                 ref={videoRef}
                 alt="Live Camera Stream"
-                className="w-full h-auto max-h-[280px] sm:max-h-[400px] object-contain"
+                className="h-auto max-h-[300px] w-full object-contain sm:max-h-[420px]"
                 style={{ display: 'block' }}
                 crossOrigin="anonymous"
                 onError={(e) => {
@@ -209,19 +209,19 @@ function DiseaseDetection({ refreshPumpStatus }) {
                   console.log('Stream loaded')
                 }}
               />
-              <div className="absolute inset-0 flex items-center justify-center text-white opacity-0 hover:opacity-100 transition-opacity bg-black bg-opacity-30">
-                <p className="text-sm">Live Stream - Pi Camera</p>
+              <div className="absolute left-4 top-4 rounded-full border border-white/15 bg-black/45 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-white backdrop-blur-sm">
+                Live Pi camera stream
               </div>
             </div>
           ) : preview ? (
             <div className="space-y-3">
-              <div className="border-2 border-green-400 rounded-lg overflow-hidden bg-gray-50 min-h-[220px] sm:min-h-[300px] flex items-center justify-center p-2">
+              <div className="flex min-h-[240px] items-center justify-center overflow-hidden rounded-[28px] border border-emerald-300 bg-white p-3 shadow-[0_24px_60px_rgba(16,39,35,0.08)] sm:min-h-[320px]">
                 <img
                   src={preview}
                   alt="Captured Image"
-                  className="w-full h-auto max-h-[280px] sm:max-h-[400px] object-contain rounded-lg shadow-lg"
+                  className="h-auto max-h-[300px] w-full rounded-2xl object-contain shadow-lg sm:max-h-[420px]"
                   style={{ display: 'block' }}
-                  onError={(e) => {
+                  onError={() => {
                     console.error('Error loading captured image')
                     setError('Failed to load captured image. Please try capturing again.')
                     setPreview(null)
@@ -241,13 +241,13 @@ function DiseaseDetection({ refreshPumpStatus }) {
                   setSelectedImage(null)
                   setResult(null)
                 }}
-                className="w-full px-4 py-2 bg-gray-500 text-white rounded-lg text-sm hover:bg-gray-600 transition-all"
+                className="w-full rounded-2xl border border-slate-300 bg-slate-100 px-4 py-3 text-sm font-medium text-slate-800 transition-all hover:bg-slate-200"
               >
-                ✏️ Change Image
+                Change Image
               </button>
             </div>
           ) : (
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-primary-500 transition-colors min-h-[200px] flex items-center justify-center">
+            <div className="flex min-h-[240px] items-center justify-center rounded-[28px] border-2 border-dashed border-slate-300 bg-white/65 p-6 text-center transition-colors hover:border-emerald-500 hover:bg-white">
               <input
                 type="file"
                 accept="image/*"
@@ -257,11 +257,13 @@ function DiseaseDetection({ refreshPumpStatus }) {
               />
               <label
                 htmlFor="image-upload"
-                className="cursor-pointer flex flex-col items-center gap-2"
+                className="flex cursor-pointer flex-col items-center gap-2"
               >
-                <span className="text-4xl">📁</span>
-                <span className="text-gray-600 font-medium">Upload Image</span>
-                <span className="text-sm text-gray-500">Click to select an image file</span>
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-emerald-800">
+                  Upload zone
+                </span>
+                <span className="text-xl font-semibold text-slate-800">Select a tomato leaf image</span>
+                <span className="text-sm text-slate-500">Click here to browse and prepare a sample for analysis</span>
               </label>
             </div>
           )}
@@ -270,58 +272,64 @@ function DiseaseDetection({ refreshPumpStatus }) {
             <button
               onClick={detectDisease}
               disabled={loading}
-              className="w-full px-5 sm:px-6 py-3 sm:py-4 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-all md:hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 text-base sm:text-lg shadow-lg"
+              className="w-full rounded-[26px] border border-emerald-400 bg-gradient-to-r from-emerald-600 via-emerald-700 to-teal-800 px-5 py-4 text-base font-semibold text-white shadow-[0_22px_50px_rgba(21,128,61,0.25)] transition-all duration-200 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50 sm:px-6 sm:text-lg"
             >
               {loading ? (
                 <span className="flex items-center justify-center gap-2">
-                  <span className="animate-spin">⏳</span>
+                  <span className="animate-spin">◌</span>
                   Analyzing Image...
                 </span>
               ) : (
-                <span className="flex items-center justify-center gap-2">
-                  🔍 Detect Disease
-                </span>
+                <span className="flex items-center justify-center gap-2">Detect Disease</span>
               )}
             </button>
           )}
         </div>
 
         <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-700">Detection Results</h3>
-          
+          <div className="rounded-3xl border border-slate-200 bg-white/80 p-4 sm:p-5">
+            <p className="text-sm font-semibold uppercase tracking-[0.22em] text-slate-500">
+              Detection results
+            </p>
+            <h3 className="mt-2 text-2xl font-bold text-slate-900">Model response and spray decision</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-600">
+              Review classification output, confidence, and whether any automatic spray sequence was triggered.
+            </p>
+          </div>
+
           {error && (
-            <div className="p-4 bg-red-50 border-2 border-red-200 rounded-lg">
-              <p className="text-red-700 font-medium">❌ Error</p>
-              <p className="text-red-600 text-sm mt-1">{error}</p>
+            <div className="rounded-3xl border border-rose-200 bg-rose-50 p-4">
+              <p className="font-medium text-rose-800">Error</p>
+              <p className="mt-1 text-sm text-rose-700">{error}</p>
             </div>
           )}
 
           {loading && (
-            <div className="p-8 text-center">
-              <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-primary-500 border-t-transparent"></div>
-              <p className="mt-4 text-gray-600">Analyzing image...</p>
+            <div className="rounded-3xl border border-slate-200 bg-white/70 p-8 text-center">
+              <div className="inline-block h-12 w-12 animate-spin rounded-full border-4 border-emerald-500 border-t-transparent"></div>
+              <p className="mt-4 text-slate-600">Analyzing image...</p>
             </div>
           )}
 
           {result && (
             <div className="space-y-4">
-              <div className={`p-6 rounded-lg border-2 ${
-                result.is_healthy || result.is_not_a_leaf
-                  ? 'bg-green-50 border-green-300'
-                  : 'bg-yellow-50 border-yellow-300'
-              }`}>
-                <div className="flex items-start sm:items-center gap-3">
-                  <span className="text-2xl sm:text-3xl">
-                    {result.is_healthy || result.is_not_a_leaf ? '✅' : '⚠️'}
-                  </span>
+              <div className={`rounded-3xl border p-6 ${resultTone}`}>
+                <div className="flex items-start gap-3 sm:items-center">
+                  <div className={`flex h-12 w-12 items-center justify-center rounded-2xl text-xl font-bold ${
+                    result.is_healthy || result.is_not_a_leaf
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-amber-500 text-white'
+                  }`}>
+                    {result.is_healthy || result.is_not_a_leaf ? 'OK' : '!'}
+                  </div>
                   <div>
-                    <h4 className="text-lg sm:text-xl font-bold text-gray-800 break-words">
+                    <h4 className="break-words text-lg font-bold text-slate-900 sm:text-xl">
                       {result.disease}
                     </h4>
-                    <p className="text-sm text-gray-600">
-                      {result.is_healthy 
-                        ? 'Healthy Leaf' 
-                        : result.is_not_a_leaf 
+                    <p className="text-sm text-slate-600">
+                      {result.is_healthy
+                        ? 'Healthy Leaf'
+                        : result.is_not_a_leaf
                         ? 'Not A Leaf'
                         : 'Disease Detected'}
                     </p>
@@ -329,31 +337,35 @@ function DiseaseDetection({ refreshPumpStatus }) {
                 </div>
               </div>
 
-              {/* Pump - manual only via Start/Stop Dispensing */}
               <div className="space-y-3">
                 {result.is_healthy || result.is_not_a_leaf ? (
-                  <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                    <p className="text-green-700 font-medium flex items-center gap-2">
-                      ✅ Healthy leaf or not a leaf — no spray needed
+                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                    <p className="font-medium text-emerald-800">
+                      Healthy leaf or non-leaf sample detected. No spray action required.
                     </p>
                   </div>
                 ) : (
-                  <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <p className="text-yellow-700 font-medium flex items-center gap-2">
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
+                    <p className="font-medium text-amber-800">
                       {result.auto_dispense_started
-                        ? '💧 Disease detected. Pump turned on automatically for 3 seconds.'
-                        : `⚠️ Disease detected. ${result.pump_message || 'Use Start / Stop Dispensing to control the pump.'}`}
+                        ? 'Disease detected. Pump turned on automatically for 3 seconds.'
+                        : `Disease detected. ${result.pump_message || 'Use Start / Stop Dispensing to control the pump.'}`}
                     </p>
                   </div>
                 )}
+
               </div>
             </div>
           )}
 
           {!result && !loading && !error && (
-            <div className="p-8 text-center text-gray-400 border-2 border-dashed border-gray-300 rounded-lg">
-              <span className="text-4xl block mb-2">🔍</span>
-              <p>Upload or capture an image to detect diseases</p>
+            <div className="rounded-[28px] border-2 border-dashed border-slate-300 bg-white/65 p-8 text-center text-slate-500">
+              <span className="block text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                Awaiting sample
+              </span>
+              <p className="mt-3 text-lg font-semibold text-slate-700">
+                Upload or capture an image to start disease detection
+              </p>
             </div>
           )}
         </div>
