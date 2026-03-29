@@ -23,6 +23,7 @@ GPIOZERO_AVAILABLE = False
 OutputDevice = None
 LGPIOFactory = None
 _gpio_backend = "simulation"
+_pump_factory = None
 _pump_device = None
 
 try:
@@ -79,12 +80,26 @@ def _ensure_initialized():
 def _write_pump_state(enabled):
     global _pump_device
 
-    if _pump_device is not None:
+    if _gpio_backend == "gpiozero-lgpio":
         try:
             if enabled:
-                _pump_device.on()
+                if _pump_device is None:
+                    _pump_device = OutputDevice(
+                        PUMP_GPIO,
+                        active_high=not RELAY_ACTIVE_LOW,
+                        initial_value=True,
+                        pin_factory=_pump_factory,
+                    )
+                else:
+                    _pump_device.on()
             else:
-                _pump_device.off()
+                # Some 5V active-low relay boards don't reliably switch OFF when a Pi
+                # drives the line HIGH at 3.3V. Releasing the line lets the module's
+                # pull-up return it to the OFF state.
+                if _pump_device is not None:
+                    _pump_device.close()
+                    _pump_device = None
+
             print(f"[PUMP] GPIO {PUMP_GPIO} set to {'ON' if enabled else 'OFF'} ({_gpio_backend})")
             return True
         except Exception as exc:
@@ -100,7 +115,14 @@ def _write_pump_state(enabled):
         return False
 
     try:
-        GPIO.output(PUMP_GPIO, _on_state() if enabled else _off_state())
+        if enabled:
+            GPIO.setup(PUMP_GPIO, GPIO.OUT, initial=_on_state())
+            GPIO.output(PUMP_GPIO, _on_state())
+        elif RELAY_ACTIVE_LOW:
+            GPIO.setup(PUMP_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_OFF)
+        else:
+            GPIO.setup(PUMP_GPIO, GPIO.OUT, initial=_off_state())
+            GPIO.output(PUMP_GPIO, _off_state())
         print(
             f"[PUMP] GPIO {PUMP_GPIO} set to "
             f"{'ON' if enabled else 'OFF'} "
@@ -137,39 +159,39 @@ def _set_mode_locked(mode, running, action):
 
 def init_spray_pumps():
     """Initialize the relay output pin and force the pump OFF."""
-    global _gpio_backend, _pump_device, spray_pump_initialized
+    global _gpio_backend, _pump_device, _pump_factory, spray_pump_initialized
 
     if GPIOZERO_AVAILABLE:
         try:
-            factory = LGPIOFactory()
-            _pump_device = OutputDevice(
-                PUMP_GPIO,
-                active_high=not RELAY_ACTIVE_LOW,
-                initial_value=False,
-                pin_factory=factory,
-            )
-            _pump_device.off()
+            _pump_factory = LGPIOFactory()
+            _pump_device = None
             spray_pump_initialized = True
             _gpio_backend = "gpiozero-lgpio"
             print(
                 f"[INIT] Pump GPIO {PUMP_GPIO} initialized with gpiozero/lgpio. "
-                f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'}."
+                f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'} "
+                f"(OFF uses released input state)."
             )
             return True
         except Exception as exc:
             _pump_device = None
+            _pump_factory = None
             print(f"[INIT] gpiozero/lgpio init failed, falling back: {exc}")
 
     if GPIO_AVAILABLE and GPIO is not None:
         try:
             GPIO.setmode(GPIO.BCM)
-            GPIO.setup(PUMP_GPIO, GPIO.OUT, initial=_off_state())
-            GPIO.output(PUMP_GPIO, _off_state())
+            if RELAY_ACTIVE_LOW:
+                GPIO.setup(PUMP_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_OFF)
+            else:
+                GPIO.setup(PUMP_GPIO, GPIO.OUT, initial=_off_state())
+                GPIO.output(PUMP_GPIO, _off_state())
             spray_pump_initialized = True
             _gpio_backend = "rpi-gpio"
             print(
                 f"[INIT] Pump GPIO {PUMP_GPIO} initialized with RPi.GPIO. "
-                f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'}."
+                f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'} "
+                f"(OFF uses released input state)."
             )
             return True
         except Exception as exc:
@@ -352,7 +374,7 @@ def trigger_spray_by_disease(disease_name, duration=SPRAY_DURATION):
 
 def cleanup_spray_pumps():
     """Force the pump OFF and release GPIO resources."""
-    global _gpio_backend, _pump_device, spray_pump_initialized
+    global _gpio_backend, _pump_device, _pump_factory, spray_pump_initialized
 
     with _state_lock:
         _advance_run_id_locked()
@@ -361,14 +383,21 @@ def cleanup_spray_pumps():
 
     if _pump_device is not None:
         try:
-            _pump_device.off()
             _pump_device.close()
         except Exception as exc:
             print(f"[CLEANUP ERROR] Failed to close gpiozero device: {exc}")
         finally:
             _pump_device = None
+            _pump_factory = None
             spray_pump_initialized = False
             _gpio_backend = "simulation"
+        print("[CLEANUP] Pump GPIO cleaned up.")
+        return
+
+    if _gpio_backend == "gpiozero-lgpio":
+        _pump_factory = None
+        spray_pump_initialized = False
+        _gpio_backend = "simulation"
         print("[CLEANUP] Pump GPIO cleaned up.")
         return
 
@@ -382,7 +411,10 @@ def cleanup_spray_pumps():
         return
 
     try:
-        GPIO.output(PUMP_GPIO, _off_state())
+        if RELAY_ACTIVE_LOW:
+            GPIO.setup(PUMP_GPIO, GPIO.IN, pull_up_down=GPIO.PUD_OFF)
+        else:
+            GPIO.output(PUMP_GPIO, _off_state())
         GPIO.cleanup(PUMP_GPIO)
         spray_pump_initialized = False
         print("[CLEANUP] Pump GPIO cleaned up.")
