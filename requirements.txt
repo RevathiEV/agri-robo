@@ -5,6 +5,8 @@ pillow
 pyserial
 tensorflow-macos
 tensorflow-metal
+gpiozero
+lgpio
 # ============================================
 # Requirements for Agri ROBO Tomato
 # ============================================

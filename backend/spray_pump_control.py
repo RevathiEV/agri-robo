@@ -8,16 +8,37 @@ Supports:
 - manual stop interrupting an active automatic cycle immediately
 """
 
+import sys
 import threading
 import time
+
+# Add Raspberry Pi OS dist-packages so GPIO libraries installed with apt
+# are available inside the project's virtual environment.
+if "/usr/lib/python3/dist-packages" not in sys.path:
+    sys.path.insert(0, "/usr/lib/python3/dist-packages")
+
+GPIO = None
+GPIO_AVAILABLE = False
+GPIOZERO_AVAILABLE = False
+OutputDevice = None
+LGPIOFactory = None
+_gpio_backend = "simulation"
+_pump_device = None
+
+try:
+    from gpiozero import OutputDevice
+    from gpiozero.pins.lgpio import LGPIOFactory
+
+    GPIOZERO_AVAILABLE = True
+except Exception as exc:
+    print(f"Warning: gpiozero/lgpio not available: {exc}")
 
 try:
     import RPi.GPIO as GPIO
 
     GPIO_AVAILABLE = True
-except ImportError:
-    GPIO_AVAILABLE = False
-    print("Warning: RPi.GPIO not available. Running in simulation mode.")
+except Exception as exc:
+    print(f"Warning: RPi.GPIO not available: {exc}")
 
 
 PUMP_GPIO = 17
@@ -56,11 +77,25 @@ def _ensure_initialized():
 
 
 def _write_pump_state(enabled):
+    global _pump_device
+
+    if _pump_device is not None:
+        try:
+            if enabled:
+                _pump_device.on()
+            else:
+                _pump_device.off()
+            print(f"[PUMP] GPIO {PUMP_GPIO} set to {'ON' if enabled else 'OFF'} ({_gpio_backend})")
+            return True
+        except Exception as exc:
+            print(f"[PUMP ERROR] Failed to control gpiozero device: {exc}")
+            return False
+
     if not GPIO_AVAILABLE:
         print(f"[SIMULATION] Pump {'ON' if enabled else 'OFF'}")
         return True
 
-    if not spray_pump_initialized:
+    if not spray_pump_initialized or GPIO is None:
         print("[PUMP] Pump not initialized. Call init_spray_pumps() first.")
         return False
 
@@ -102,27 +137,48 @@ def _set_mode_locked(mode, running, action):
 
 def init_spray_pumps():
     """Initialize the relay output pin and force the pump OFF."""
-    global spray_pump_initialized
+    global _gpio_backend, _pump_device, spray_pump_initialized
 
-    if not GPIO_AVAILABLE:
-        spray_pump_initialized = True
-        print("[INIT] GPIO not available. Pump controller ready in simulation mode.")
-        return True
+    if GPIOZERO_AVAILABLE:
+        try:
+            factory = LGPIOFactory()
+            _pump_device = OutputDevice(
+                PUMP_GPIO,
+                active_high=not RELAY_ACTIVE_LOW,
+                initial_value=False,
+                pin_factory=factory,
+            )
+            _pump_device.off()
+            spray_pump_initialized = True
+            _gpio_backend = "gpiozero-lgpio"
+            print(
+                f"[INIT] Pump GPIO {PUMP_GPIO} initialized with gpiozero/lgpio. "
+                f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'}."
+            )
+            return True
+        except Exception as exc:
+            _pump_device = None
+            print(f"[INIT] gpiozero/lgpio init failed, falling back: {exc}")
 
-    try:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(PUMP_GPIO, GPIO.OUT, initial=_off_state())
-        GPIO.output(PUMP_GPIO, _off_state())
-        spray_pump_initialized = True
-        print(
-            f"[INIT] Pump GPIO {PUMP_GPIO} initialized. "
-            f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'}."
-        )
-        return True
-    except Exception as exc:
-        spray_pump_initialized = False
-        print(f"[INIT ERROR] Failed to initialize pump GPIO: {exc}")
-        return False
+    if GPIO_AVAILABLE and GPIO is not None:
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(PUMP_GPIO, GPIO.OUT, initial=_off_state())
+            GPIO.output(PUMP_GPIO, _off_state())
+            spray_pump_initialized = True
+            _gpio_backend = "rpi-gpio"
+            print(
+                f"[INIT] Pump GPIO {PUMP_GPIO} initialized with RPi.GPIO. "
+                f"Relay mode: {'active LOW' if RELAY_ACTIVE_LOW else 'active HIGH'}."
+            )
+            return True
+        except Exception as exc:
+            print(f"[INIT] RPi.GPIO init failed: {exc}")
+
+    spray_pump_initialized = False
+    _gpio_backend = "simulation"
+    print("[INIT ERROR] Failed to initialize pump GPIO with any backend.")
+    return False
 
 
 def turn_on_pump(_motor="A"):
@@ -296,14 +352,27 @@ def trigger_spray_by_disease(disease_name, duration=SPRAY_DURATION):
 
 def cleanup_spray_pumps():
     """Force the pump OFF and release GPIO resources."""
-    global spray_pump_initialized
+    global _gpio_backend, _pump_device, spray_pump_initialized
 
     with _state_lock:
         _advance_run_id_locked()
         _cancel_auto_cycle_locked()
         _set_mode_locked("idle", False, "cleanup")
 
-    if not GPIO_AVAILABLE:
+    if _pump_device is not None:
+        try:
+            _pump_device.off()
+            _pump_device.close()
+        except Exception as exc:
+            print(f"[CLEANUP ERROR] Failed to close gpiozero device: {exc}")
+        finally:
+            _pump_device = None
+            spray_pump_initialized = False
+            _gpio_backend = "simulation"
+        print("[CLEANUP] Pump GPIO cleaned up.")
+        return
+
+    if not GPIO_AVAILABLE or GPIO is None:
         spray_pump_initialized = False
         print("[CLEANUP] Pump controller cleaned up in simulation mode.")
         return
@@ -326,9 +395,11 @@ def get_status():
     with _state_lock:
         return {
             "gpio_available": GPIO_AVAILABLE,
+            "gpiozero_available": GPIOZERO_AVAILABLE,
             "initialized": spray_pump_initialized,
             "pump_gpio": PUMP_GPIO,
             "relay_active_low": RELAY_ACTIVE_LOW,
+            "backend": _gpio_backend,
             "pump_running": _pump_running,
             "mode": _pump_mode,
             "last_action": _last_action,
