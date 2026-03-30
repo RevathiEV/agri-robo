@@ -26,7 +26,7 @@ function MotorControl() {
   }
 
   const buttonClass = (direction) => {
-    const baseClass = 'w-full rounded-2xl border px-4 py-4 text-center text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 sm:min-w-[160px] sm:px-6 sm:py-5 sm:text-base'
+    const baseClass = 'min-w-0 w-full rounded-2xl border px-4 py-4 text-center text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5 sm:py-5 sm:text-base'
     const activeClass = currentDirection === direction
       ? 'scale-[0.98] ring-2 ring-offset-2 ring-offset-white'
       : 'hover:-translate-y-0.5'
@@ -58,7 +58,7 @@ function MotorControl() {
             <span className="mt-1 block">Forward</span>
           </button>
 
-          <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
+          <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.88fr)_minmax(0,1fr)] sm:gap-4">
             <button
               onClick={() => handleMotorControl('left')}
               disabled={isMoving}
@@ -70,7 +70,7 @@ function MotorControl() {
             <button
               onClick={() => handleMotorControl('stop')}
               disabled={isMoving}
-              className="w-full rounded-2xl border border-slate-300 bg-slate-100 px-4 py-4 text-center text-sm font-semibold text-slate-900 transition-all duration-200 hover:-translate-y-0.5 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50 sm:px-6 sm:py-5 sm:text-base"
+              className="min-w-0 w-full rounded-2xl border border-slate-300 bg-slate-100 px-4 py-4 text-center text-sm font-semibold text-slate-900 transition-all duration-200 hover:-translate-y-0.5 hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-50 sm:px-5 sm:py-5 sm:text-base"
             >
               <span className="block text-lg">■</span>
               <span className="mt-1 block">Stop</span>
