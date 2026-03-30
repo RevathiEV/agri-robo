@@ -348,7 +348,7 @@ function DiseaseDetection({ refreshPumpStatus }) {
                   <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
                     <p className="font-medium text-amber-800">
                       {result.auto_dispense_started
-                        ? 'Disease detected. Pump turned on automatically for 3 seconds.'
+                        ? result.pump_message || 'Automatic spray started for 3 seconds.'
                         : `Disease detected. ${result.pump_message || 'Use Start / Stop Dispensing to control the pump.'}`}
                     </p>
                   </div>

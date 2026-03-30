@@ -6,6 +6,7 @@ function ServoControl({ pumpStatus, refreshPumpStatus }) {
 
   const isRunning = pumpStatus?.pump_running || false
   const mode = pumpStatus?.mode || 'idle'
+  const activeTargetLabel = pumpStatus?.active_target_label || 'No Pumps'
   const status = mode === 'manual'
     ? 'Running Manually'
     : mode === 'auto'
@@ -48,6 +49,9 @@ function ServoControl({ pumpStatus, refreshPumpStatus }) {
             <span className={`h-3 w-3 rounded-full ${isRunning ? 'bg-emerald-500' : 'bg-slate-400'}`} />
             <span>{status}</span>
           </div>
+          <p className="mt-2 text-xs font-medium uppercase tracking-[0.18em] opacity-70">
+            {activeTargetLabel}
+          </p>
         </div>
       </div>
 
@@ -74,7 +78,7 @@ function ServoControl({ pumpStatus, refreshPumpStatus }) {
             Manual mode
           </p>
           <p className="mt-2 text-sm text-slate-700">
-            Start Dispensing keeps the pump running until a stop command is issued.
+            Start Dispensing keeps both pumps running until a stop command is issued.
           </p>
         </div>
         <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3">
@@ -82,7 +86,7 @@ function ServoControl({ pumpStatus, refreshPumpStatus }) {
             Automation note
           </p>
           <p className="mt-2 text-sm text-sky-800">
-            Disease detection can still trigger a timed 3 second spray automatically.
+            Disease detection can trigger Pump 1, Pump 2, or both pumps for a timed 3 second spray.
           </p>
         </div>
       </div>
