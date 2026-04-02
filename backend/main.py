@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import io
 import json
 import os
+from urllib.parse import urlencode
 import sys
 import threading
 import time
@@ -11,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 import numpy as np
 from PIL import Image, ImageEnhance
+import requests
 from tensorflow.keras.models import load_model
 import tensorflow as tf
 from spray_pump_control import (
@@ -43,6 +45,40 @@ camera_streaming = False
 camera_lock = threading.Lock()
 current_frame = None
 current_motor_direction = "stop"
+ESP32_MOTOR_BASE_URL = os.getenv("ESP32_MOTOR_BASE_URL", "").rstrip("/")
+ESP32_MOTOR_TIMEOUT = float(os.getenv("ESP32_MOTOR_TIMEOUT", "1.5"))
+
+
+def motor_hardware_configured():
+    return bool(ESP32_MOTOR_BASE_URL)
+
+
+def send_motor_command_to_esp32(direction: str):
+    """Forward a movement command to the ESP32 motor controller."""
+    if not motor_hardware_configured():
+        raise RuntimeError(
+            "ESP32 motor controller URL is not configured. "
+            "Set ESP32_MOTOR_BASE_URL, for example http://192.168.1.50"
+        )
+
+    params = urlencode({"direction": direction})
+    endpoint = f"{ESP32_MOTOR_BASE_URL}/move?{params}"
+
+    try:
+        response = requests.post(endpoint, timeout=ESP32_MOTOR_TIMEOUT)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to reach ESP32 motor controller: {exc}") from exc
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {
+            "success": True,
+            "message": response.text.strip() or "ESP32 responded without JSON payload.",
+        }
+
+    return payload
 
 
 def load_model_and_mapping():
@@ -175,13 +211,15 @@ async def health_check():
         "num_classes": len(class_mapping) if class_mapping else 0,
         "tensorflow_version": tf.__version__,
         "current_motor_direction": current_motor_direction,
+        "motor_hardware_configured": motor_hardware_configured(),
+        "esp32_motor_base_url": ESP32_MOTOR_BASE_URL or None,
         "pump_status": get_pump_status(),
     }
 
 
 @app.post("/api/motor/control")
 async def motor_control(direction: str):
-    """Motor control endpoint kept for frontend compatibility."""
+    """Forward movement commands from the frontend to the ESP32 motor controller."""
     global current_motor_direction
 
     allowed_directions = {"front", "back", "left", "right", "stop"}
@@ -193,12 +231,14 @@ async def motor_control(direction: str):
 
     current_motor_direction = direction
     print(f"[MOTOR] Direction set to: {direction}")
+    hardware_response = send_motor_command_to_esp32(direction)
 
     return {
         "success": True,
         "direction": current_motor_direction,
-        "message": f"Motor command '{direction}' received",
-        "hardware_connected": False,
+        "message": f"Motor command '{direction}' forwarded to ESP32",
+        "hardware_connected": True,
+        "hardware_response": hardware_response,
     }
 
 
