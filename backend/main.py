@@ -43,10 +43,31 @@ except ImportError:
     TENSORFLOW_AVAILABLE = False
     print("Warning: tensorflow not available. Disease detection will be disabled.")
 
+try:
+    from tflite_runtime.interpreter import Interpreter as TFLiteInterpreter
+
+    TFLITE_RUNTIME_AVAILABLE = True
+    TFLITE_RUNTIME_SOURCE = "tflite-runtime"
+except ImportError:
+    if TENSORFLOW_AVAILABLE:
+        TFLiteInterpreter = tf.lite.Interpreter
+        TFLITE_RUNTIME_AVAILABLE = True
+        TFLITE_RUNTIME_SOURCE = "tensorflow-lite"
+    else:
+        TFLiteInterpreter = None
+        TFLITE_RUNTIME_AVAILABLE = False
+        TFLITE_RUNTIME_SOURCE = None
+
 
 # Global variables for model and class mapping
 model = None
 class_mapping = None
+model_backend = None
+model_source_path = None
+model_input_shape = None
+model_input_details = None
+model_output_details = None
+MODEL_BACKEND_PREFERENCE = os.getenv("MODEL_BACKEND", "auto").strip().lower()
 
 # Global variables for camera
 camera = None
@@ -94,35 +115,68 @@ def send_motor_command_to_esp32(direction: str):
     return payload
 
 
-def load_model_and_mapping():
-    """Load the disease detection model and class mapping."""
-    global model, class_mapping
-
-    if not TENSORFLOW_AVAILABLE:
-        raise RuntimeError(
-            "TensorFlow is not installed on this system. "
-            "Disease detection is disabled, but motor and pump control can still run."
-        )
-
+def get_model_paths():
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(backend_dir)
 
-    model_path_best = os.path.join(project_root, "tomato_disease_model_best.h5")
-    model_path = os.path.join(project_root, "tomato_disease_model.h5")
-    mapping_path = os.path.join(project_root, "class_mapping.json")
+    return {
+        "project_root": project_root,
+        "keras_best": os.path.join(project_root, "tomato_disease_model_best.h5"),
+        "keras": os.path.join(project_root, "tomato_disease_model.h5"),
+        "tflite": os.path.join(project_root, "tomato_disease_model.tflite"),
+        "mapping": os.path.join(project_root, "class_mapping.json"),
+    }
 
-    if os.path.exists(model_path_best):
-        model_path = model_path_best
-        print(f"Loading best model from: {model_path}")
-    elif os.path.exists(model_path):
-        print(f"Loading model from: {model_path}")
-    else:
-        raise FileNotFoundError(
-            f"Model file not found. Checked:\n"
-            f"  - {model_path_best}\n"
-            f"  - {model_path}\n"
-            f"Please run cnn_train.py to generate the model."
-        )
+
+def get_model_input_shape():
+    if model_input_shape is not None:
+        return model_input_shape
+
+    if model is not None and hasattr(model, "input_shape"):
+        return tuple(int(dim) for dim in model.input_shape[1:])
+
+    raise RuntimeError("Model input shape is not available because the model is not loaded.")
+
+
+def predict_with_loaded_model(img_array):
+    if model_backend == "keras":
+        return model.predict(img_array, verbose=0)[0]
+
+    if model_backend == "tflite":
+        input_detail = model_input_details[0]
+        output_detail = model_output_details[0]
+        input_dtype = input_detail["dtype"]
+        input_tensor = img_array.astype(input_dtype)
+
+        if not np.issubdtype(input_dtype, np.floating):
+            scale, zero_point = input_detail.get("quantization", (0.0, 0))
+            if scale:
+                input_tensor = np.round(img_array / scale + zero_point)
+            dtype_info = np.iinfo(input_dtype)
+            input_tensor = np.clip(input_tensor, dtype_info.min, dtype_info.max).astype(input_dtype)
+
+        model.set_tensor(input_detail["index"], input_tensor)
+        model.invoke()
+        output_tensor = model.get_tensor(output_detail["index"])
+
+        if not np.issubdtype(output_tensor.dtype, np.floating):
+            scale, zero_point = output_detail.get("quantization", (0.0, 0))
+            output_tensor = output_tensor.astype(np.float32)
+            if scale:
+                output_tensor = (output_tensor - zero_point) * scale
+
+        return np.asarray(output_tensor[0], dtype=np.float32)
+
+    raise RuntimeError("No supported model backend is currently loaded.")
+
+
+def load_model_and_mapping():
+    """Load the disease detection model and class mapping."""
+    global model, class_mapping, model_backend, model_source_path
+    global model_input_shape, model_input_details, model_output_details
+
+    paths = get_model_paths()
+    mapping_path = paths["mapping"]
 
     if not os.path.exists(mapping_path):
         raise FileNotFoundError(
@@ -130,37 +184,87 @@ def load_model_and_mapping():
             f"Please run cnn_train.py to generate the class mapping."
         )
 
-    print(f"TensorFlow version: {tf.__version__}")
-    print(f"Loading model from: {model_path}")
-
-    try:
-        print("Attempting to load model with compile=False...")
-        loaded_model = load_model(model_path, compile=False)
-        loaded_model.compile(
-            optimizer="adam",
-            loss="categorical_crossentropy",
-            metrics=["accuracy"],
-        )
-        model = loaded_model
-        print("Model loaded and recompiled successfully")
-    except Exception as first_error:
-        print(f"Warning: compile=False load failed: {first_error}")
-        try:
-            model = load_model(model_path)
-            print("Model loaded with standard method")
-        except Exception as second_error:
-            raise RuntimeError(
-                f"Could not load model with either method.\n"
-                f"  compile=False error: {str(first_error)[:200]}\n"
-                f"  standard error: {str(second_error)[:200]}"
-            ) from second_error
-
     with open(mapping_path, "r") as mapping_file:
         mapping = json.load(mapping_file)
     class_mapping = {int(key): value for key, value in mapping.items()}
 
-    print(f"Model input shape: {model.input_shape}")
-    print(f"Class mapping loaded: {len(class_mapping)} classes")
+    requested_backend = MODEL_BACKEND_PREFERENCE
+    if requested_backend not in {"auto", "keras", "tflite"}:
+        raise RuntimeError(
+            f"Invalid MODEL_BACKEND '{requested_backend}'. Use auto, keras, or tflite."
+        )
+
+    if requested_backend in {"auto", "keras"}:
+        keras_path = None
+        if os.path.exists(paths["keras_best"]):
+            keras_path = paths["keras_best"]
+        elif os.path.exists(paths["keras"]):
+            keras_path = paths["keras"]
+
+        if keras_path is not None:
+            if not TENSORFLOW_AVAILABLE and requested_backend == "keras":
+                raise RuntimeError(
+                    "MODEL_BACKEND=keras was requested, but TensorFlow is not installed."
+                )
+
+            if TENSORFLOW_AVAILABLE:
+                print(f"TensorFlow version: {tf.__version__}")
+                print(f"Loading Keras model from: {keras_path}")
+                try:
+                    loaded_model = load_model(keras_path, compile=False)
+                    loaded_model.compile(
+                        optimizer="adam",
+                        loss="categorical_crossentropy",
+                        metrics=["accuracy"],
+                    )
+                    model = loaded_model
+                except Exception as first_error:
+                    print(f"Warning: compile=False load failed: {first_error}")
+                    try:
+                        model = load_model(keras_path)
+                    except Exception as second_error:
+                        raise RuntimeError(
+                            f"Could not load Keras model with either method.\n"
+                            f"  compile=False error: {str(first_error)[:200]}\n"
+                            f"  standard error: {str(second_error)[:200]}"
+                        ) from second_error
+
+                model_backend = "keras"
+                model_source_path = keras_path
+                model_input_shape = tuple(int(dim) for dim in model.input_shape[1:])
+                model_input_details = None
+                model_output_details = None
+                print(f"Model input shape: {model.input_shape}")
+                print(f"Class mapping loaded: {len(class_mapping)} classes")
+                return
+
+    if requested_backend in {"auto", "tflite"} and os.path.exists(paths["tflite"]):
+        if not TFLITE_RUNTIME_AVAILABLE:
+            raise RuntimeError(
+                "A TFLite model is available, but neither tflite-runtime nor TensorFlow Lite "
+                "is installed on this system."
+            )
+
+        print(f"Loading TFLite model from: {paths['tflite']} ({TFLITE_RUNTIME_SOURCE})")
+        interpreter = TFLiteInterpreter(model_path=paths["tflite"])
+        interpreter.allocate_tensors()
+        model = interpreter
+        model_backend = "tflite"
+        model_source_path = paths["tflite"]
+        model_input_details = interpreter.get_input_details()
+        model_output_details = interpreter.get_output_details()
+        model_input_shape = tuple(int(dim) for dim in model_input_details[0]["shape"][1:])
+        print(f"TFLite input shape: {model_input_shape}")
+        print(f"Class mapping loaded: {len(class_mapping)} classes")
+        return
+
+    raise RuntimeError(
+        "No compatible disease model could be loaded.\n"
+        f"Checked Keras models: {paths['keras_best']}, {paths['keras']}\n"
+        f"Checked TFLite model: {paths['tflite']}\n"
+        f"TensorFlow available: {TENSORFLOW_AVAILABLE}\n"
+        f"TFLite runtime available: {TFLITE_RUNTIME_AVAILABLE}"
+    )
 
 
 @asynccontextmanager
@@ -211,25 +315,29 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    backend_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(backend_dir)
+    paths = get_model_paths()
 
-    model_path_best = os.path.join(project_root, "tomato_disease_model_best.h5")
-    model_path = os.path.join(project_root, "tomato_disease_model.h5")
-    mapping_path = os.path.join(project_root, "class_mapping.json")
-
-    model_exists = os.path.exists(model_path) or os.path.exists(model_path_best)
-    mapping_exists = os.path.exists(mapping_path)
+    model_exists = any(
+        os.path.exists(paths[key])
+        for key in ("keras_best", "keras", "tflite")
+    )
+    mapping_exists = os.path.exists(paths["mapping"])
 
     return {
         "status": "healthy",
         "model_loaded": model is not None,
         "mapping_loaded": class_mapping is not None,
         "model_file_exists": model_exists,
+        "tflite_model_exists": os.path.exists(paths["tflite"]),
         "mapping_file_exists": mapping_exists,
         "num_classes": len(class_mapping) if class_mapping else 0,
         "tensorflow_available": TENSORFLOW_AVAILABLE,
         "tensorflow_version": tf.__version__ if tf is not None else None,
+        "tflite_runtime_available": TFLITE_RUNTIME_AVAILABLE,
+        "tflite_runtime_source": TFLITE_RUNTIME_SOURCE,
+        "model_backend": model_backend,
+        "model_source_path": model_source_path,
+        "model_input_shape": list(model_input_shape) if model_input_shape else None,
         "current_motor_direction": current_motor_direction,
         "motor_hardware_configured": motor_hardware_configured(),
         "esp32_motor_base_url": ESP32_MOTOR_BASE_URL or None,
@@ -296,7 +404,7 @@ async def detect_disease(file: UploadFile = File(...)):
             status_code=503,
             detail=(
                 "Model not loaded. Please ensure model files "
-                "(tomato_disease_model.h5 and class_mapping.json) "
+                "(tomato_disease_model.h5 or tomato_disease_model.tflite, and class_mapping.json) "
                 "are available in the project root."
             ),
         )
@@ -316,7 +424,7 @@ async def detect_disease(file: UploadFile = File(...)):
         if image.size[0] == 0 or image.size[1] == 0:
             raise HTTPException(status_code=400, detail="Invalid image dimensions")
 
-        expected_shape = model.input_shape[1:]
+        expected_shape = get_model_input_shape()
         image_size = (expected_shape[0], expected_shape[1])
 
         if image.mode != "RGB":
@@ -348,9 +456,9 @@ async def detect_disease(file: UploadFile = File(...)):
             f"value range: [{img_array.min():.3f}, {img_array.max():.3f}]"
         )
 
-        predictions = model.predict(img_array, verbose=0)
-        predicted_class_idx = int(np.argmax(predictions[0]))
-        confidence = float(predictions[0][predicted_class_idx] * 100)
+        predictions = predict_with_loaded_model(img_array)
+        predicted_class_idx = int(np.argmax(predictions))
+        confidence = float(predictions[predicted_class_idx] * 100)
 
         disease_name = class_mapping.get(predicted_class_idx, "Unknown")
         formatted_disease = format_disease_name(disease_name)
@@ -378,7 +486,9 @@ async def detect_disease(file: UploadFile = File(...)):
                 "pump_message": pump_result["message"],
                 "pump_status": pump_result["pump_status"],
                 "model_info": {
-                    "input_shape": str(model.input_shape),
+                    "backend": model_backend,
+                    "source_path": model_source_path,
+                    "input_shape": str(get_model_input_shape()),
                     "num_classes": len(class_mapping),
                 },
             }

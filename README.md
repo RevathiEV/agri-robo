@@ -50,6 +50,7 @@ A web application for detecting tomato leaf diseases using AI, with robot contro
 4. **Place model files in project root:**
    - `tomato_disease_model.h5` (or `tomato_disease_model_best.h5`)
    - `class_mapping.json`
+   - Optional for Raspberry Pi inference: `tomato_disease_model.tflite`
 
 ### Frontend Setup
 
@@ -100,6 +101,19 @@ python cnn_train.py
 ```
 
 **Note:** Training data (`train/` and `val/` folders) are not included in the repository due to size.
+
+## Raspberry Pi Notes
+
+- Motor control and pump control can run on Raspberry Pi without TensorFlow.
+- Disease detection on Pi is supported through a `tomato_disease_model.tflite` file when `tflite-runtime` is available.
+- If you already have a trained `.h5` model on another machine with TensorFlow installed, create the Pi-friendly model with:
+
+```bash
+python convert_model_to_tflite.py
+```
+
+- Copy `tomato_disease_model.tflite` and `class_mapping.json` to the project root on the Pi.
+- The backend will automatically use `.tflite` when TensorFlow/Keras is unavailable.
 
 ## Project Structure
 

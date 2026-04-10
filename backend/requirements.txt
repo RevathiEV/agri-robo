@@ -1,63 +1,14 @@
-fastapi
-uvicorn
-numpy
-pillow
-pyserial
-tensorflow-macos
-tensorflow-metal
-# Requirements for Agri ROBO Tomato
-# ============================================
-# Install in virtual environment (NOT globally)
-# 
-# Installation:
-# 1. Create virtual environment: python -m venv backend/venv
-# 2. Activate: backend\venv\Scripts\Activate.ps1 (Windows) or source backend/venv/bin/activate (Linux/Mac)
-# 3. Install: pip install -r requirements.txt
-#
-# Note: For Python 3.13, if NumPy installation fails:
-# pip install --only-binary :all: numpy
-# pip install -r requirements.txt
-
-# ============================================
-# Web Framework & Server
-# ============================================
 fastapi>=0.104.1
 uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
-
-# ============================================
-# Machine Learning & Deep Learning
-# ============================================
-tensorflow>=2.10.0,<3.0.0
 numpy>=1.24.0
 scipy>=1.9.0
-
-# ============================================
-# Image Processing
-# ============================================
 Pillow>=9.0.0
-
-# ============================================
-# Testing & Development
-# ============================================
 requests>=2.31.0
-
-# ============================================
-# Serial Communication (Bluetooth)
-# ============================================
 pyserial>=3.5
+gpiozero>=2.0.1
+lgpio>=0.2.2.0 ; platform_system == "Linux"
+tflite-runtime>=2.14.0 ; platform_system == "Linux" and python_version < "3.12"
 
-# ============================================
-# GPIO Control (Raspberry Pi)
-# ============================================
-<<<<<<< HEAD
-# gpiozero is the recommended library for GPIO control on Raspberry Pi
-# It's usually pre-installed on Raspberry Pi OS, but can be installed via pip:
-# pip install gpiozero
-gpiozero>=1.6.2
-=======
-# Note: RPi.GPIO is usually installed via apt on Raspberry Pi:
-# sudo apt-get install python3-rpi.gpio
-# But can also be installed via pip:
-RPi.GPIO>=0.7.1
->>>>>>> 56f70c66d42b1cabcabacc68dfb83897bcbd75cb
+# TensorFlow is optional and should be installed separately only on systems
+# where disease detection is needed and a supported build is available.
