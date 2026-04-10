@@ -231,7 +231,10 @@ async def motor_control(direction: str):
 
     current_motor_direction = direction
     print(f"[MOTOR] Direction set to: {direction}")
-    hardware_response = send_motor_command_to_esp32(direction)
+    try:
+        hardware_response = send_motor_command_to_esp32(direction)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return {
         "success": True,
