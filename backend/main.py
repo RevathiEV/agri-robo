@@ -45,7 +45,11 @@ camera_streaming = False
 camera_lock = threading.Lock()
 current_frame = None
 current_motor_direction = "stop"
-ESP32_MOTOR_BASE_URL = os.getenv("ESP32_MOTOR_BASE_URL", "").rstrip("/")
+ESP32_MOTOR_HOSTNAME = os.getenv("ESP32_MOTOR_HOSTNAME", "agri-robo-esp32.local")
+ESP32_MOTOR_BASE_URL = os.getenv(
+    "ESP32_MOTOR_BASE_URL",
+    f"http://{ESP32_MOTOR_HOSTNAME}",
+).rstrip("/")
 ESP32_MOTOR_TIMEOUT = float(os.getenv("ESP32_MOTOR_TIMEOUT", "1.5"))
 
 
