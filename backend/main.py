@@ -13,8 +13,6 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 import numpy as np
 from PIL import Image, ImageEnhance
 import requests
-from tensorflow.keras.models import load_model
-import tensorflow as tf
 from spray_pump_control import (
     cleanup_spray_pumps,
     get_status as get_pump_status,
@@ -33,6 +31,17 @@ try:
 except ImportError:
     PICAMERA2_AVAILABLE = False
     print("Warning: picamera2 not available. Camera features will be disabled.")
+
+try:
+    from tensorflow.keras.models import load_model
+    import tensorflow as tf
+
+    TENSORFLOW_AVAILABLE = True
+except ImportError:
+    load_model = None
+    tf = None
+    TENSORFLOW_AVAILABLE = False
+    print("Warning: tensorflow not available. Disease detection will be disabled.")
 
 
 # Global variables for model and class mapping
@@ -88,6 +97,12 @@ def send_motor_command_to_esp32(direction: str):
 def load_model_and_mapping():
     """Load the disease detection model and class mapping."""
     global model, class_mapping
+
+    if not TENSORFLOW_AVAILABLE:
+        raise RuntimeError(
+            "TensorFlow is not installed on this system. "
+            "Disease detection is disabled, but motor and pump control can still run."
+        )
 
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(backend_dir)
@@ -213,7 +228,8 @@ async def health_check():
         "model_file_exists": model_exists,
         "mapping_file_exists": mapping_exists,
         "num_classes": len(class_mapping) if class_mapping else 0,
-        "tensorflow_version": tf.__version__,
+        "tensorflow_available": TENSORFLOW_AVAILABLE,
+        "tensorflow_version": tf.__version__ if tf is not None else None,
         "current_motor_direction": current_motor_direction,
         "motor_hardware_configured": motor_hardware_configured(),
         "esp32_motor_base_url": ESP32_MOTOR_BASE_URL or None,

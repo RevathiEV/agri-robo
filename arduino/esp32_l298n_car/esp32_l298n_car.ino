@@ -1,14 +1,12 @@
 #include <WiFi.h>
-#include <ESPmDNS.h>
 #include <WebServer.h>
 
 const char* ssid = "Rekha";
 const char* password = "12345678";
-const char* hostname = "agri-robo-esp32";
 
 WebServer server(80);
 
-// ESP32 -> L298N mapping
+// ESP32 -> L298N pin mapping
 const int IN1 = 25;
 const int IN2 = 26;
 const int IN3 = 27;
@@ -94,7 +92,6 @@ void handleMove() {
   }
 
   lastCommandAt = millis();
-
   String body = "{\"success\":true,\"direction\":\"" + currentDirection + "\"}";
   sendJson(200, body);
 }
@@ -114,7 +111,6 @@ void setup() {
   stopMotors();
 
   WiFi.mode(WIFI_STA);
-  WiFi.setHostname(hostname);
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
@@ -125,13 +121,6 @@ void setup() {
   Serial.println();
   Serial.print("ESP32 IP: ");
   Serial.println(WiFi.localIP());
-  if (MDNS.begin(hostname)) {
-    Serial.print("ESP32 mDNS: http://");
-    Serial.print(hostname);
-    Serial.println(".local");
-  } else {
-    Serial.println("mDNS setup failed");
-  }
 
   server.on("/health", HTTP_GET, handleHealth);
   server.on("/move", HTTP_GET, handleMove);
